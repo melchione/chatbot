@@ -1,0 +1,55 @@
+services:
+  sveltekit:
+    build:
+      context: sveltekit
+      dockerfile: Dockerfile
+      target: ${ENV:-development}
+    ports:
+      - "${EXTERNAL_SVELTEKIT_PORT:-8080}:8080"
+      - "${EXTERNAL_SVELTEKIT_DEBUGGER_PORT:-9229}:9229"
+    volumes:
+      - ./sveltekit/.svelte-kit:/app/.svelte-kit
+      - ./sveltekit/build:/app/build
+      - ./sveltekit/src:/app/src
+      - ./sveltekit/static:/app/static
+      - ./sveltekit/jsconfig.json:/app/jsconfig.json
+      - ./sveltekit/svelte.config.js:/app/svelte.config.js
+      - ./sveltekit/vite.config.js:/app/vite.config.js
+      - ./shared:/shared
+    environment:
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      FAST_API_URL: ${FAST_API_URL:-http://fast-api:8000}
+      JWT_SECRET: ${JWT_SECRET}
+      FRONTEND_URL: ${FRONTEND_URL}
+    networks:
+      - chatbot_default
+  fast-api:
+    build:
+      context: ./fast-api
+      dockerfile: Dockerfile
+      target: ${ENV:-${TARGET:-development}}
+    ports:
+      - "${EXTERNAL_FASTAPI_PORT:-8000}:8000"
+      - "${EXTERNAL_FASTAPI_DEBUGGER_PORT:-4567}:4567"
+    volumes:
+      - ./fast-api:/app
+      - ./shared:/shared
+      - ./fast-api/uv.lock:/app/uv.lock
+      - ./fast-api/pyproject.toml:/app/pyproject.toml
+    environment:
+      ENV: ${ENV:-development}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      STRICT_ENVIRONMENT: ${STRICT_ENVIRONMENT:-${ENVIRONMENT:-development}}
+      TARGET_FASTAPI: ${TARGET_FASTAPI:-development}
+      DOMAIN: ${DOMAIN}
+      FRONT_DOMAIN: ${FRONT_DOMAIN}
+      GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT}
+      GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION}
+      GOOGLE_RESOURCE_ID: ${GOOGLE_RESOURCE_ID}
+    networks:
+      - chatbot_default
+
+
+networks:
+  chatbot_default:
+    driver: bridge
