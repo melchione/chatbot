@@ -1,0 +1,53 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+
+    {
+      "type": "node",
+      "request": "attach",
+      "name": "Docker: Attach to SvelteKit",
+      "address": "localhost",
+      "port": 9229,
+      "localRoot": "${workspaceFolder}/sveltekit",
+      "remoteRoot": "/app",
+      "restart": true,
+      "skipFiles": [
+        "<node_internals>/**",
+        "node_modules/**"
+      ]
+    },
+    {
+      "type": "chrome",
+      "request": "launch",
+      "name": "Launch Chrome",
+      "url": "http://localhost:8080",
+      "webRoot": "${workspaceFolder}/sveltekit",
+      "sourceMaps": true,
+      "sourceMapPathOverrides": {
+        "webpack:///./src/*": "${webRoot}/src/*",
+        "webpack:///src/*": "${webRoot}/src/*",
+        "/_app/*": "${webRoot}/.svelte-kit/output/client/_app/*"
+      }
+    },
+    {
+      "name": "Python: Remote Attach (FastAPI Docker)",
+      "type": "debugpy",
+      "request": "attach",
+      "connect": {
+          "host": "localhost", // Ou l'IP de votre machine Docker si différente
+          "port": 4567        // Le port exposé dans docker-compose.yaml
+      },
+      "pathMappings": [
+          {
+              "localRoot": "${workspaceFolder}/fast-api", // Chemin vers votre code local
+              "remoteRoot": "/app"                       // Chemin du code dans le conteneur (défini dans Dockerfile)
+          },
+          {
+              "localRoot": "${workspaceFolder}/shared", // Chemin vers le dossier partagé local
+              "remoteRoot": "/shared"                  // Chemin du dossier partagé dans le conteneur
+          }
+      ],
+      "justMyCode": true // Mettez à false si vous voulez déboguer dans les bibliothèques installées
+  }
+  ]
+}

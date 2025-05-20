@@ -15,7 +15,6 @@ services:
       - ./sveltekit/jsconfig.json:/app/jsconfig.json
       - ./sveltekit/svelte.config.js:/app/svelte.config.js
       - ./sveltekit/vite.config.js:/app/vite.config.js
-      - ./shared:/shared
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       FAST_API_URL: ${FAST_API_URL:-http://fast-api:8000}
@@ -33,9 +32,9 @@ services:
       - "${EXTERNAL_FASTAPI_DEBUGGER_PORT:-4567}:4567"
     volumes:
       - ./fast-api:/app
-      - ./shared:/shared
       - ./fast-api/uv.lock:/app/uv.lock
       - ./fast-api/pyproject.toml:/app/pyproject.toml
+      - ./gcp-service-account-key.json:/app/gcp-service-account-key.json:ro # Montez la clé en lecture seule
     environment:
       ENV: ${ENV:-development}
       ENVIRONMENT: ${ENVIRONMENT:-development}
@@ -43,9 +42,10 @@ services:
       TARGET_FASTAPI: ${TARGET_FASTAPI:-development}
       DOMAIN: ${DOMAIN}
       FRONT_DOMAIN: ${FRONT_DOMAIN}
+      GOOGLE_APPLICATION_CREDENTIALS: /app/gcp-service-account-key.json # Chemin à l'intérieur du conteneur
       GOOGLE_CLOUD_PROJECT: ${GOOGLE_CLOUD_PROJECT}
       GOOGLE_CLOUD_LOCATION: ${GOOGLE_CLOUD_LOCATION}
-      GOOGLE_RESOURCE_ID: ${GOOGLE_RESOURCE_ID}
+      AGENT_RESOURCE_ID: ${AGENT_RESOURCE_ID}
     networks:
       - chatbot_default
 

@@ -24,3 +24,5 @@ vite.config.ts.timestamp-*
 
 
 project-horizon
+fast-api/gcp-service-account-key.json
+gcp-service-account-key.json
