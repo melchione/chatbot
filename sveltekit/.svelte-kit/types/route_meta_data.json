@@ -1,9 +1,6 @@
 {
 	"/": [],
-	"/api/chat/message": [
-		"src/routes/api/chat/message/+server.js"
-	],
-	"/api/chat/session": [
-		"src/routes/api/chat/session/+server.js"
+	"/chat": [
+		"src/routes/chat/+page.server.js"
 	]
 }

@@ -17,7 +17,8 @@ services:
       - ./sveltekit/vite.config.js:/app/vite.config.js
     environment:
       ENVIRONMENT: ${ENVIRONMENT:-development}
-      FAST_API_URL: ${FAST_API_URL:-http://fast-api:8000}
+      PUBLIC_FAST_API_URL: ${PUBLIC_FAST_API_URL:-http://fast-api:8000}
+      PUBLIC_FAST_API_WS_URL: ${PUBLIC_FAST_API_WS_URL:-ws://fast-api:8000}
       JWT_SECRET: ${JWT_SECRET}
       FRONTEND_URL: ${FRONTEND_URL}
     networks:

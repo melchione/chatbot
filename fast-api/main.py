@@ -2,6 +2,7 @@ import os
 import logging
 import base64  # Pour décoder les images
 from typing import Any, Optional
+from fastapi.middleware.cors import CORSMiddleware
 
 import vertexai
 from vertexai import agent_engines
@@ -88,44 +89,6 @@ async def initialize_vertex_ai_agent():
         raise  # Relancer l'exception pour que FastAPI la gère au démarrage
 
 
-# --- Middleware CORS (Adapté de votre version) ---
-class DynamicCORSMiddleware(BaseHTTPMiddleware):
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
-        origin = request.headers.get("origin")
-        allowed_origins = os.getenv(
-            "ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
-        ).split(",")
-
-        headers = {
-            "Access-Control-Allow-Credentials": "true",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Authorization, Content-Type, X-Visitor-Token, User-Agent, X-Request-ID",
-            "Access-Control-Max-Age": "3600",
-        }
-
-        is_allowed_origin = origin in allowed_origins if origin else False
-
-        if is_allowed_origin:
-            headers["Access-Control-Allow-Origin"] = origin
-
-        if request.method == "OPTIONS":
-            # Pour OPTIONS, retourner les headers CORS est suffisant si l'origine est autorisée ou si pas d'origine (même domaine)
-            return Response(
-                status_code=204,
-                content="",
-                headers=headers if is_allowed_origin else {},
-            )
-
-        response = await call_next(request)
-        if is_allowed_origin:
-            for key, value in headers.items():
-                if key not in response.headers:
-                    response.headers[key] = value
-        return response
-
-
 # --- Application FastAPI ---
 app = FastAPI(
     title=APP_NAME,
@@ -133,7 +96,13 @@ app = FastAPI(
     redoc_url=None,
     # on_startup est géré par @app.on_event("startup") maintenant
 )
-app.add_middleware(DynamicCORSMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,  # Si vous utilisez des cookies ou des en-têtes d'autorisation
+    allow_methods=["*"],  # Ou spécifiez des méthodes comme ["GET", "POST"]
+    allow_headers=["*"],  # Ou spécifiez des en-têtes autorisés
+)
 
 
 # --- Événements de Démarrage/Arrêt de FastAPI ---

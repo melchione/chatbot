@@ -34,7 +34,6 @@ declare module '$env/static/private' {
 	export const npm_node_execpath: string;
 	export const npm_config_noproxy: string;
 	export const SHLVL: string;
-	export const FAST_API_URL: string;
 	export const HOME: string;
 	export const ENVIRONMENT: string;
 	export const npm_package_json: string;
@@ -76,7 +75,8 @@ declare module '$env/static/private' {
  * ```
  */
 declare module '$env/static/public' {
-	
+	export const PUBLIC_FAST_API_URL: string;
+	export const PUBLIC_FAST_API_WS_URL: string;
 }
 
 /**
@@ -103,7 +103,6 @@ declare module '$env/dynamic/private' {
 		npm_node_execpath: string;
 		npm_config_noproxy: string;
 		SHLVL: string;
-		FAST_API_URL: string;
 		HOME: string;
 		ENVIRONMENT: string;
 		npm_package_json: string;
@@ -152,6 +151,8 @@ declare module '$env/dynamic/private' {
  */
 declare module '$env/dynamic/public' {
 	export const env: {
+		PUBLIC_FAST_API_URL: string;
+		PUBLIC_FAST_API_WS_URL: string;
 		[key: `PUBLIC_${string}`]: string | undefined;
 	}
 }
