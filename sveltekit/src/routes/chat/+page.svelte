@@ -1,24 +1,19 @@
 <script>
-    import { onMount, afterUpdate } from "svelte";
-    import {
-        messages,
-        isConnected,
-        initializeSessionAndConnect,
-        sendMessage,
-    } from "../../lib/chatLogic.js";
+    import { onMount } from "svelte";
+    import { chatState } from "$lib/chatLogic.svelte.js";
     import { enhance } from "$app/forms";
 
     /** @type {import('./$types').PageData} */
-    export let data; // Données venant de la fonction load (+page.server.js)
+    let { data } = $props(); // Données venant de la fonction load (+page.server.js)
 
-    let messageInput = "";
+    let messageInput = $state("");
     /** @type {HTMLDivElement | null} */
     let messagesArea = null;
-    let autoScroll = true;
+    let autoScroll = $state(true);
 
     onMount(async () => {
         // Passer l'ID de session de `load` à la logique d'initialisation
-        await initializeSessionAndConnect(data.sessionId);
+        await chatState.initializeSessionAndConnect(data.sessionId);
         scrollToBottom(); // Scroll initial après chargement potentiel de l'historique
     });
 
@@ -28,7 +23,7 @@
         }
     }
 
-    afterUpdate(() => {
+    $effect(() => {
         scrollToBottom();
     });
 
@@ -42,9 +37,10 @@
         }
     }
 
-    async function handleSubmit() {
+    async function handleSubmit(event) {
+        event.preventDefault();
         if (!messageInput.trim()) return;
-        sendMessage(messageInput.trim());
+        chatState.sendMessage(messageInput.trim());
         messageInput = ""; // Clear input after sending
         autoScroll = true; // Réactiver l'auto-scroll lors de l'envoi d'un message
         // La fonction enhance s'occupera de la soumission du formulaire au serveur
@@ -59,16 +55,14 @@
 
 <div class="chat-container">
     <h1>SvelteKit Vertex AI Chat</h1>
-    <div
-        bind:this={messagesArea}
-        class="messages-area"
-        on:scroll={handleScroll}
-    >
-        {#each $messages as message (message.id)}
-            <div class="message {message.type}" data-event-id={message.id}>
-                {@html message.text}
-                <!-- Utiliser @html car chatLogic peut contenir des <br> -->
-            </div>
+    <div bind:this={messagesArea} class="messages-area" onscroll={handleScroll}>
+        {#each chatState.messages as message (message.id)}
+            {#if message.type !== "system-message"}
+                <div class="message {message.type}" data-event-id={message.id}>
+                    {@html message.text}
+                    <!-- Utiliser @html car chatLogic peut contenir des <br> -->
+                </div>
+            {/if}
         {:else}
             <p class="system-message">No messages yet. Say hello!</p>
         {/each}
@@ -90,7 +84,7 @@
                 await update(); // Met à jour l'état de la page si nécessaire
             };
         }}
-        on:submit|preventDefault={handleSubmit}
+        onsubmit={handleSubmit}
         class="message-form"
     >
         <input
@@ -99,9 +93,11 @@
             bind:value={messageInput}
             autocomplete="off"
             placeholder="Type your message..."
-            disabled={!$isConnected}
+            disabled={!chatState.isConnected}
         />
-        <button type="submit" disabled={!$isConnected || !messageInput.trim()}
+        <button
+            type="submit"
+            disabled={!chatState.isConnected || !messageInput.trim()}
             >Send</button
         >
     </form>

@@ -35,15 +35,3 @@ export const actions = {
         return { success: true, sentMessage: message.toString() };
     }
 };
-
-// Fonction load pour passer des données initiales à la page (par exemple, l'ID de session depuis les cookies)
-// export async function load({ cookies }) {
-//     let sessionId = cookies.get('chat_session_id');
-//     if (!sessionId) {
-// Logique pour en créer un nouveau si nécessaire, potentiellement via un endpoint interne
-// Pour l'instant, on laisse le client gérer la création via WebSocket comme dans l'original
-//     }
-//     return {
-//         sessionId: sessionId
-//     };
-// } 
