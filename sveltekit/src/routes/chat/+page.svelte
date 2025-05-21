@@ -3,9 +3,6 @@
     import { chatState } from "$lib/chatLogic.svelte.js";
     import { enhance } from "$app/forms";
 
-    /** @type {import('./$types').PageData} */
-    let { data } = $props(); // Données venant de la fonction load (+page.server.js)
-
     let messageInput = $state("");
     /** @type {HTMLDivElement | null} */
     let messagesArea = null;
@@ -37,6 +34,7 @@
         }
     }
 
+    /** @param {Event & { currentTarget: EventTarget & HTMLFormElement }} event */
     async function handleSubmit(event) {
         event.preventDefault();
         if (!messageInput.trim()) return;

@@ -2,7 +2,6 @@ import os
 import logging
 import base64
 import uuid  # Ajout pour générer des session_id uniques
-import json  # Pour le logging des dictionnaires, si nécessaire
 from typing import Any, Optional
 
 from features.agents.marketing_agent.agent import root_agent  # Votre import
@@ -113,9 +112,9 @@ async def create_session_adk(websocket: WebSocket, client_id: str):
         session = await session_service.create_session(
             app_name=APP_NAME_ADK, user_id=client_id, session_id=session_id
         )
-        print(f"Session créée: {session}")
+        logger.info(f"Session créée: {session}")
     except Exception as e:
-        print(f"Avertissement: Création session échouée (peut exister): {e}")
+        logger.warning(f"Création session échouée (peut exister): {e}")
 
     try:
         await websocket.send_json({"type": "session_created", "session_id": session_id})
@@ -294,8 +293,6 @@ async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_i
 
     except WebSocketDisconnect:
         logger.info(f"ADK WebSocket client {client_id} disconnected.")
-    # Retirer la gestion spécifique des erreurs google_exceptions pour l'instant
-    # except google_exceptions.GoogleAPIError as e: ...
     except Exception as e:
         logger.error(
             f"Error in ADK WebSocket endpoint for client {client_id}: {e}",

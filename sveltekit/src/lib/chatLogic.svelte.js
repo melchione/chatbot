@@ -1,4 +1,4 @@
-// import { writable } from 'svelte/store'; // Supprimé
+// import { writable } from 'svelte/store'; // Commentaire supprimé
 import { PUBLIC_FAST_API_URL, PUBLIC_FAST_API_WS_URL } from '$env/static/public';
 
 const USER_ID = "test_user"; // User ID fixe pour le moment
