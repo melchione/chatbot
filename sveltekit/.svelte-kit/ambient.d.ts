@@ -63,6 +63,7 @@ declare module '$env/static/private' {
 	export const FRONTEND_URL: string;
 	export const INIT_CWD: string;
 	export const EDITOR: string;
+	export const VSCODE_INSPECTOR_OPTIONS: string;
 }
 
 /**
@@ -132,6 +133,7 @@ declare module '$env/dynamic/private' {
 		FRONTEND_URL: string;
 		INIT_CWD: string;
 		EDITOR: string;
+		VSCODE_INSPECTOR_OPTIONS: string;
 		[key: `PUBLIC_${string}`]: undefined;
 		[key: `${string}`]: string | undefined;
 	}

@@ -14,15 +14,27 @@ const USER_ID = "test_user"; // User ID fixe pour le moment
  * }} Message
  */
 
+/**
+ * @typedef {{
+ *  session_id: string;
+ *  user_id: string;
+ *  app_name: string;
+ *  last_update_time: number;
+ * }} UserSession
+ */
+
 class ChatState {
     /** @type {Array<Message>} */
-    #messages = $state([]);
-    #isConnected = $state(false);
+    _messages = $state([]);
+    _isConnected = $state(false);
     /** @type {string | null} */
-    #currentSessionId = $state(null);
+    _currentSessionId = $state(null);
     /** @type {WebSocket | null} */
-    #ws = null;
-    #isThinking = $state(false);
+    _ws = null;
+    _isThinking = $state(false);
+    /** @type {Array<UserSession>} */
+    _userSessions = $state([]);
+    _isSwitchingSession = $state(false); // Pour éviter la reconnexion auto pendant un switch manuel
 
     constructor() {
         // Initialisation si nécessaire, ou laisser vide si $state gère l'initialisation
@@ -31,19 +43,23 @@ class ChatState {
     // Getters pour l'accès en lecture seule de l'extérieur si nécessaire
     // (Svelte 5 runes rendent souvent cela implicite via la réactivité de $state)
     get messages() {
-        return this.#messages;
+        return this._messages;
     }
 
     get isThinking() {
-        return this.#isThinking;
+        return this._isThinking;
     }
 
     get isConnected() {
-        return this.#isConnected;
+        return this._isConnected;
     }
 
     get currentSessionId() {
-        return this.#currentSessionId;
+        return this._currentSessionId;
+    }
+
+    get userSessions() {
+        return this._userSessions;
     }
 
     // Méthodes pour modifier l'état
@@ -55,7 +71,7 @@ class ChatState {
      * @param {(string | null)} [mimeType=null]
      */
     addMessage(text, type, eventId = null, imageDataUrl = null, mimeType = null) {
-        if (eventId && this.#messages.some(msg => msg.id === eventId)) {
+        if (eventId && this._messages.some(msg => msg.id === eventId)) {
             return;
         }
         const newMessage = {
@@ -65,20 +81,20 @@ class ChatState {
             imageDataUrl,
             mimeType
         };
-        this.#messages = [...this.#messages, newMessage];
+        this._messages = [...this._messages, newMessage];
     }
 
     /**
      * @param {string} text
      */
     updateLastMessagePart(text) {
-        this.#isThinking = false;
-        if (this.#messages.length > 0) {
-            let lastMessage = this.#messages[this.#messages.length - 1];
+        this._isThinking = false;
+        if (this._messages.length > 0) {
+            let lastMessage = this._messages[this._messages.length - 1];
             if (lastMessage && lastMessage.type === "agent-message" && !lastMessage.completed) {
                 const updatedText = lastMessage.text + text.replace(/\n/g, "<br>");
-                this.#messages = [
-                    ...this.#messages.slice(0, -1),
+                this._messages = [
+                    ...this._messages.slice(0, -1),
                     { ...lastMessage, text: updatedText }
                 ];
             } else {
@@ -90,30 +106,34 @@ class ChatState {
     }
 
     completeLastMessage() {
-        this.#isThinking = false;
-        if (this.#messages.length > 0) {
-            let lastMessage = this.#messages[this.#messages.length - 1];
+        this._isThinking = false;
+        if (this._messages.length > 0) {
+            let lastMessage = this._messages[this._messages.length - 1];
             if (lastMessage && lastMessage.type === "agent-message" && !lastMessage.completed) {
-                this.#messages = [
-                    ...this.#messages.slice(0, -1),
+                this._messages = [
+                    ...this._messages.slice(0, -1),
                     { ...lastMessage, completed: true }
                 ];
             }
         }
     }
 
+    clearMessages() {
+        this._messages = [];
+    }
+
     /**
      * @param {boolean} status
      */
     setConnected(status) {
-        this.#isConnected = status;
+        this._isConnected = status;
     }
 
     /**
      * @param {string | null} sessionId
      */
     setCurrentSessionId(sessionId) {
-        this.#currentSessionId = sessionId;
+        this._currentSessionId = sessionId;
     }
 
     /**
@@ -132,7 +152,7 @@ class ChatState {
             }
             const data = await response.json();
             if (data.events && data.events.length > 0) {
-                const filteredCurrentMessages = this.#messages.filter(msg => !(msg.text === "Loading chat history..." && msg.type === "system-message"));
+                const filteredCurrentMessages = this._messages.filter(msg => !(msg.text === "Loading chat history..." && msg.type === "system-message"));
 
                 const historyMessages = data.events.map(/** @param {any} event */ event => {
                     let textContent = "";
@@ -181,7 +201,7 @@ class ChatState {
                     */
                     m => m !== null
                 );
-                this.#messages = [...filteredCurrentMessages, ...historyMessages];
+                this._messages = [...filteredCurrentMessages, ...historyMessages];
                 this.addMessage("Chat history loaded.", "system-message");
             } else {
                 this.addMessage("No previous chat history found or session is new.", "system-message");
@@ -207,19 +227,20 @@ class ChatState {
             return;
         }
         const chatWsUrl = `${PUBLIC_FAST_API_WS_URL}/ws/${userId}/${sessionId}`;
-        this.#ws = new WebSocket(chatWsUrl);
+        this._ws = new WebSocket(chatWsUrl);
 
-        this.#ws.onopen = () => {
+        this._ws.onopen = () => {
             console.log("Connected to WebSocket server with User ID:", userId, "and Session ID:", sessionId);
             this.setConnected(true);
             this.addMessage("Connected to agent.", "system-message");
+            this._isSwitchingSession = false; // Réinitialiser après une connexion réussie
         };
 
-        this.#ws.onmessage = (event) => {
+        this._ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
             console.log("Received:", data);
             if (data.type === "status" && data.message === "Agent service connected") {
-                this.#isThinking = false;
+                this._isThinking = false;
             }
             if (data.type === "message_part" && data.text) {
                 this.updateLastMessagePart(data.text);
@@ -227,24 +248,30 @@ class ChatState {
                 this.completeLastMessage();
             } else if (data.type === "error" && data.message) {
                 this.addMessage("Error: " + data.message, "error-message");
-                this.#isThinking = false;
+                this._isThinking = false;
             } else if (data.text) {
                 this.addMessage(data.text, "agent-message");
             }
         };
 
-        this.#ws.onclose = () => {
+        this._ws.onclose = () => {
             console.log("Disconnected from WebSocket server.");
             this.setConnected(false);
-            this.addMessage("Disconnected. Attempting to reconnect in 5 seconds...", "system-message");
-            setTimeout(() => this.initializeSessionAndConnect(null, true), 5000);
+            // Uniquement tenter de reconnecter si ce n'est pas un changement de session manuel
+            if (!this._isSwitchingSession) {
+                this.addMessage("Disconnected. Attempting to reconnect in 5 seconds...", "system-message");
+                setTimeout(() => this.initializeSessionAndConnect(null, true), 5000);
+            } else {
+                console.log("WebSocket closed due to session switch. No auto-reconnect.");
+                // this._isSwitchingSession sera remis à false par la méthode appelante (createNewSession/switchSession) après la nouvelle connexion
+            }
         };
 
-        this.#ws.onerror = (error) => {
+        this._ws.onerror = (error) => {
             console.error("WebSocket error:", error);
             this.addMessage("WebSocket error. Check console.", "error-message");
-            this.#isThinking = false;
-            if (this.#ws) this.#ws.close();
+            this._isThinking = false;
+            if (this._ws) this._ws.close();
         };
     }
 
@@ -256,6 +283,10 @@ class ChatState {
         this.setConnected(false);
         if (!isReconnectAttempt) {
             this.addMessage("Initializing session...", "system-message");
+        } else {
+            // Si c'est une tentative de reconnexion, ne pas afficher "Initializing session..." à nouveau
+            // mais s'assurer que isSwitchingSession est false pour permettre la reconnexion
+            this._isSwitchingSession = false;
         }
 
         let sessionId = initialSessionIdFromLoad;
@@ -263,6 +294,10 @@ class ChatState {
         if (!sessionId) {
             sessionId = getCookie("chat_session_id");
         }
+
+        // Charger les sessions utilisateur au démarrage ou lors du changement de session
+        // On le fait ici car USER_ID est disponible
+        await this.loadUserSessions(USER_ID);
 
         if (sessionId) {
             this.setCurrentSessionId(sessionId);
@@ -296,8 +331,11 @@ class ChatState {
                         sessionWs.close();
                         if (sessionId) {
                             // Lancer le chargement de l\'historique après avoir obtenu un nouveau session_id
+                            this.clearMessages(); // Vider les messages précédents
+                            this.addMessage("New session created: " + sessionId, "system-message");
                             await this.loadChatHistory(USER_ID, sessionId);
                             this.connectToChatWebSocket(USER_ID, sessionId);
+                            await this.loadUserSessions(USER_ID); // Recharger la liste des sessions
                         }
                     } else {
                         console.error("Failed to create session:", data);
@@ -329,13 +367,13 @@ class ChatState {
      * @param {string} messageText
      */
     sendTextMessage(messageText) {
-        if (messageText && this.#ws && this.#ws.readyState === WebSocket.OPEN) {
-            this.#isThinking = true;
+        if (messageText && this._ws && this._ws.readyState === WebSocket.OPEN) {
+            this._isThinking = true;
             const payload = {
                 type: "text",
                 data: messageText
             };
-            this.#ws.send(JSON.stringify(payload));
+            this._ws.send(JSON.stringify(payload));
             this.addMessage(messageText, "user-message");
         } else {
             this.addMessage("Cannot send message. WebSocket not connected or message is empty.", "error-message");
@@ -348,21 +386,100 @@ class ChatState {
      * @param {string} [prompt=""] - Le prompt textuel accompagnant l\'image
      */
     sendImageMessage(imageDataBase64, mimeType, prompt = "") {
-        if (imageDataBase64 && mimeType && this.#ws && this.#ws.readyState === WebSocket.OPEN) {
-            this.#isThinking = true;
+        if (imageDataBase64 && mimeType && this._ws && this._ws.readyState === WebSocket.OPEN) {
+            this._isThinking = true;
             const payload = {
                 type: "image",
                 data: imageDataBase64, // Le backend attend la data base64 brute
                 mime_type: mimeType,
                 prompt: prompt
             };
-            this.#ws.send(JSON.stringify(payload));
+            this._ws.send(JSON.stringify(payload));
             // Ajoute l\'image et le prompt au store local pour affichage immédiat
             // Le texte du message sera le prompt, et imageDataUrl contiendra l\'image pour l\'affichage local
             this.addMessage(prompt, "user-image", null, `data:${mimeType};base64,${imageDataBase64}`, mimeType);
         } else {
             this.addMessage("Cannot send image. WebSocket not connected, image data or mime type missing.", "error-message");
         }
+    }
+
+    /**
+     * @param {string} userId
+     */
+    async loadUserSessions(userId) {
+        console.log("Loading user sessions for", userId);
+        try {
+            const httpBaseUrl = PUBLIC_FAST_API_URL;
+            const sessionsUrl = `${httpBaseUrl}/sessions/${userId}`;
+            const response = await fetch(sessionsUrl);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ detail: "Failed to fetch user sessions, server returned: " + response.status }));
+                throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+            }
+            const data = await response.json();
+            if (data.sessions) {
+                this._userSessions = data.sessions.sort((a, b) => b.last_update_time - a.last_update_time);
+                console.log("User sessions loaded:", this._userSessions);
+            }
+        } catch (error) {
+            console.error("Error loading user sessions:", error);
+            if (error instanceof Error) {
+                this.addMessage("Error loading user sessions: " + error.message, "error-message");
+            } else {
+                this.addMessage("An unknown error occurred while loading user sessions.", "error-message");
+            }
+        }
+    }
+
+    /**
+     * Crée une nouvelle session pour l'utilisateur actuel.
+     * @param {string} userId - L'ID de l'utilisateur.
+     */
+    async createNewSession(userId) {
+        this.clearMessages();
+        this.addMessage("Creating new session...", "system-message");
+
+        this._isSwitchingSession = true; // Indiquer un changement manuel
+        if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+            this._ws.close();
+        }
+        this.setConnected(false); // Mettre à jour l'état de connexion immédiatement
+
+        removeCookie("chat_session_id");
+        this.setCurrentSessionId(null);
+
+        // La création de session se fait via initializeSessionAndConnect si aucun cookie n'est trouvé
+        // Elle mettra à jour l'UI et la liste des sessions une fois terminée
+        await this.initializeSessionAndConnect(null, false); // false car ce n'est pas une reconnexion auto
+        // isSwitchingSession sera remis à false par onopen ou onerror de la nouvelle connexion WebSocket
+    }
+
+    /**
+     * Change la session active pour l'utilisateur.
+     * @param {string} userId - L'ID de l'utilisateur.
+     * @param {string} newSessionId - L'ID de la nouvelle session à charger.
+     */
+    async switchSession(userId, newSessionId) {
+        if (this._currentSessionId === newSessionId) {
+            console.log("Already in session:", newSessionId);
+            return;
+        }
+        this.clearMessages();
+        this.addMessage(`Switching to session ${newSessionId}...`, "system-message");
+        this._isSwitchingSession = true;
+
+        if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+            this._ws.close(); // Fermer la connexion WebSocket actuelle
+        }
+        this.setConnected(false); // Mettre à jour l'état de connexion immédiatement
+
+        setCookie("chat_session_id", newSessionId);
+        this.setCurrentSessionId(newSessionId);
+
+        await this.loadChatHistory(userId, newSessionId);
+        this.connectToChatWebSocket(userId, newSessionId);
+        // Pas besoin de recharger les sessions utilisateur ici car la liste ne change pas, juste la session active
+        // isSwitchingSession sera remis à false par onopen ou onerror de la nouvelle connexion WebSocket
     }
 }
 
@@ -419,6 +536,22 @@ export const sendImageMessage = (
     /** @type {string | undefined} */ prompt
 ) => chatState.sendImageMessage(imageDataBase64, mimeType, prompt);
 
+/**
+ * Crée une nouvelle session pour l'utilisateur actuel.
+ * @param {string} userId - L'ID de l'utilisateur.
+ */
+export async function createNewSession(userId) {
+    await chatState.createNewSession(userId);
+}
+
+/**
+ * Change la session active pour l'utilisateur.
+ * @param {string} userId - L'ID de l'utilisateur.
+ * @param {string} newSessionId - L'ID de la nouvelle session à charger.
+ */
+export async function switchSession(userId, newSessionId) {
+    await chatState.switchSession(userId, newSessionId);
+}
 
 export function getMessages() {
     return chatState.messages;
@@ -431,4 +564,16 @@ export function getCurrentSessionId() {
 }
 export function getIsThinking() {
     return chatState.isThinking;
+}
+export function getUserSessions() {
+    return chatState.userSessions;
+}
+
+// Fonction utilitaire pour supprimer un cookie
+/**
+ * @param {string} name
+ */
+function removeCookie(name) {
+    if (typeof document === 'undefined') return; // Garde-fou pour SSR
+    document.cookie = name + '=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';
 }

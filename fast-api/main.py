@@ -2,6 +2,7 @@ import os
 import logging
 import base64
 import uuid  # Ajout pour générer des session_id uniques
+import sqlite3  # Ajout pour l'accès direct à la BDD
 from typing import Any, Optional
 
 from features.agents.marketing_agent.agent import root_agent  # Votre import
@@ -40,7 +41,9 @@ APP_NAME = "ChatbotFastAPIServerWithADK"  # Nom mis à jour
 APP_NAME_ADK = "ChatbotLocalADK"  # Nom spécifique pour ADK
 
 agent_runner: Optional[Runner] = None
-session_service = DatabaseSessionService(db_url="sqlite:///database/sessions.db")
+# Utiliser une constante pour le chemin de la base de données pour éviter les répétitions
+DATABASE_FILE_PATH = "database/sessions.db"
+session_service = DatabaseSessionService(db_url=f"sqlite:///{DATABASE_FILE_PATH}")
 
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -313,6 +316,64 @@ async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_i
         logger.info(f"Closing ADK WebSocket connection for client {client_id}.")
         with suppress(Exception):  # Safely attempt to close
             await websocket.close()
+
+
+# --- Utility function to get DB connection ---
+def get_db_connection():
+    # Assurez-vous que le chemin est correct et accessible
+    conn = sqlite3.connect(DATABASE_FILE_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+@app.delete("/sessions/{user_id}/{session_id}")
+async def delete_session(user_id: str, session_id: str):
+    logger.info(
+        f"Attempting to delete session {session_id} for user {user_id} in app {APP_NAME_ADK}"
+    )
+    await session_service.delete_session(
+        app_name=APP_NAME_ADK, user_id=user_id, session_id=session_id
+    )
+    return {"message": f"Session {session_id} deleted successfully"}
+
+
+# --- Endpoint HTTP pour récupérer la liste des sessions d'un utilisateur ---
+@app.get("/sessions/{user_id}")
+async def list_user_sessions(user_id: str):
+    logger.info(
+        f"Attempting to retrieve sessions for User ID: {user_id} for app {APP_NAME_ADK}"
+    )
+    sessions = []
+    try:
+        existing_sessions = await session_service.list_sessions(
+            app_name=APP_NAME_ADK, user_id=user_id
+        )
+        for session in existing_sessions.sessions:
+            sessions.append(
+                {
+                    "session_id": session.id,
+                    "user_id": session.user_id,
+                    "app_name": session.app_name,
+                    "last_update_time": session.last_update_time,
+                }
+            )
+        logger.info(
+            f"Found {len(sessions)} sessions for user '{user_id}' in app '{APP_NAME_ADK}'."
+        )
+        return {"sessions": sessions}
+    except sqlite3.Error as sql_err:
+        logger.error(
+            f"SQLite error retrieving sessions for user {user_id}: {sql_err}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Database error retrieving sessions: {sql_err}"
+        )
+    except Exception as e:
+        logger.error(
+            f"General error retrieving sessions for user {user_id}: {e}", exc_info=True
+        )
+        raise HTTPException(status_code=500, detail="Error retrieving sessions.")
 
 
 # --- Endpoint HTTP pour récupérer l'historique de session (Adaptation pour ADK) ---

@@ -1,5 +1,15 @@
-<h1>Welcome to SvelteKit</h1>
-<p>
-    Visit <a href="https://svelte.dev/docs/kit">svelte.dev/docs/kit</a> to read the
-    documentation
-</p>
+<script>
+    import ChatInterface from "$lib/components/ChatInterface.svelte";
+    import SessionSidebar from "$lib/components/SessionSidebar.svelte";
+    import { onMount } from "svelte";
+    import { initializeSessionAndConnect } from "$lib/chatLogic.svelte.js";
+
+    onMount(() => {
+        initializeSessionAndConnect();
+    });
+</script>
+
+<div class="flex w-full h-full">
+    <SessionSidebar />
+    <ChatInterface />
+</div>
