@@ -147,21 +147,30 @@ class ChatState {
                                 if (part.text) {
                                     textContent += part.text.replace(/\n/g, "<br>");
                                 }
-                                // Note: Le backend actuel ne semble pas stocker/retourner les images dans l\'historique de cette manière.
-                                // Si l\'API d\'historique retournait des images, il faudrait adapter ici.
-                                // Pour l\'instant, on se concentre sur l\'affichage des images envoyées par l\'utilisateur dans la session active.
+                                if (part.inlineData && part.inlineData.data && part.inlineData.mimeType) {
+                                    imageDataUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                                    mimeType = part.inlineData.mimeType;
+                                    if (event.author === 'user') {
+                                        messageType = "user-image";
+                                    } else {
+                                        // Si vous voulez différencier les images de l'agent:
+                                        // messageType = "agent-image"; 
+                                        // Sinon, gardez "agent-message" et l'image s'affichera avec le texte.
+                                        // Pour l'instant, si l'agent envoie une image, on la traite comme une partie d'un message agent normal
+                                        // et l'image sera affichée par la logique du composant svelte si imageDataUrl est présent.
+                                        // La classe CSS pourrait avoir besoin d'ajustement pour les images de l'agent.
+                                    }
+                                }
                             });
                     }
-                    // Si le backend renvoyait un type MIME pour les images dans l\'historique, il faudrait l\'extraire ici.
-                    // Pour l\'instant, on ne s\'attend pas à des imageDataUrl de l\'historique via cette structure.
 
                     if (textContent || imageDataUrl) { // On ajoute seulement s'il y a du contenu
                         return {
                             text: textContent,
                             type: messageType,
                             id: event.id,
-                            imageDataUrl: imageDataUrl, // Sera null pour l\'instant depuis l\'historique
-                            mimeType: mimeType // Sera null pour l\'instant
+                            imageDataUrl: imageDataUrl,
+                            mimeType: mimeType
                         };
                     }
                     return null;

@@ -333,14 +333,40 @@ async def get_session_history_adk(user_id: str, session_id: str):
                 # On peut utiliser model_dump_json ou construire un dictionnaire manuellement
                 # Pour la simplicité, on va juste prendre le texte de la première partie si disponible.
                 # Le client devra être adapté si une structure plus riche est nécessaire.
-                part_text = ""
-                if msg_content.content.parts and msg_content.content.parts[0].text:
-                    part_text = msg_content.content.parts[0].text
+
+                # Préparer la structure pour les "parts" du contenu
+                serialized_parts = []
+                if msg_content.content and msg_content.content.parts:
+                    for part in msg_content.content.parts:
+                        part_dict = {}
+                        if part.text:
+                            part_dict["text"] = part.text
+                        elif part.inline_data and part.inline_data.data:
+                            # Assurer l'encodage Base64 pour les données binaires de l'image
+                            base64_encoded_data = base64.b64encode(
+                                part.inline_data.data
+                            ).decode("utf-8")
+                            part_dict["inlineData"] = {
+                                "mimeType": part.inline_data.mime_type,
+                                "data": base64_encoded_data,
+                            }
+
+                        # N'ajouter la partie que si elle n'est pas vide
+                        if part_dict:
+                            serialized_parts.append(part_dict)
+
+                # Construire l'objet de contenu sérialisé
+                serialized_content = {
+                    "parts": serialized_parts,
+                    "role": (
+                        msg_content.content.role if msg_content.content else "unknown"
+                    ),
+                }
 
                 serializable_history.append(
                     {
                         "author": msg_content.author,
-                        "content": msg_content.content,
+                        "content": serialized_content,  # Utiliser le contenu sérialisé
                         "id": msg_content.id,
                         # Simplifié, ne gère pas les images dans l'historique pour l'instant
                         # Idéalement, ici on sérialiserait toute la structure de Content
