@@ -13,7 +13,7 @@
 
     onMount(async () => {
         // Passer l'ID de session de `load` à la logique d'initialisation
-        await chatState.initializeSessionAndConnect(data.sessionId);
+        await chatState.initializeSessionAndConnect();
         scrollToBottom(); // Scroll initial après chargement potentiel de l'historique
     });
 
@@ -40,7 +40,7 @@
     async function handleSubmit(event) {
         event.preventDefault();
         if (!messageInput.trim()) return;
-        chatState.sendMessage(messageInput.trim());
+        chatState.sendTextMessage(messageInput.trim());
         messageInput = ""; // Clear input after sending
         autoScroll = true; // Réactiver l'auto-scroll lors de l'envoi d'un message
         // La fonction enhance s'occupera de la soumission du formulaire au serveur
@@ -57,14 +57,10 @@
     <h1>SvelteKit Vertex AI Chat</h1>
     <div bind:this={messagesArea} class="messages-area" onscroll={handleScroll}>
         {#each chatState.messages as message (message.id)}
-            {#if message.type !== "system-message"}
-                <div class="message {message.type}" data-event-id={message.id}>
-                    {@html message.text}
-                    <!-- Utiliser @html car chatLogic peut contenir des <br> -->
-                </div>
-            {/if}
-        {:else}
-            <p class="system-message">No messages yet. Say hello!</p>
+            <div class="message {message.type}" data-event-id={message.id}>
+                {@html message.text}
+                <!-- Utiliser @html car chatLogic peut contenir des <br> -->
+            </div>
         {/each}
     </div>
     <form

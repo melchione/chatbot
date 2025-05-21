@@ -4,7 +4,14 @@ import { PUBLIC_FAST_API_URL, PUBLIC_FAST_API_WS_URL } from '$env/static/public'
 const USER_ID = "test_user"; // User ID fixe pour le moment
 
 /**
- * @typedef {{id: string | number, text: string, type: string, completed?: boolean}} Message
+ * @typedef {{
+ *   id: string | number,
+ *   text: string, // Pour les messages texte ou le prompt de l\'image
+ *   type: string, // \'user-message\', \'agent-message\', \'system-message\', \'user-image\'
+ *   completed?: boolean,
+ *   imageDataUrl?: string | null, // Data URL pour les images envoyées par l\'utilisateur
+ *   mimeType?: string | null // Ajout pour spécifier le type MIME de l\'image
+ * }} Message
  */
 
 class ChatState {
@@ -41,15 +48,23 @@ class ChatState {
 
     // Méthodes pour modifier l'état
     /**
-     * @param {string} text
-     * @param {string} type
-     * @param {string | number | null} [eventId=null]
+     * @param {string} text - Le contenu textuel du message (ou prompt pour une image)
+     * @param {string} type - Le type de message (e.g., \'user-message\', \'agent-message\', \'user-image\')
+     * @param {(string | number | null)} [eventId=null]
+     * @param {(string | null)} [imageDataUrl=null]
+     * @param {(string | null)} [mimeType=null]
      */
-    addMessage(text, type, eventId = null) {
+    addMessage(text, type, eventId = null, imageDataUrl = null, mimeType = null) {
         if (eventId && this.#messages.some(msg => msg.id === eventId)) {
             return;
         }
-        const newMessage = { text, type, id: eventId || Date.now() + Math.random().toString(36) };
+        const newMessage = {
+            text,
+            type,
+            id: eventId || Date.now() + Math.random().toString(36),
+            imageDataUrl,
+            mimeType
+        };
         this.#messages = [...this.#messages, newMessage];
     }
 
@@ -57,6 +72,7 @@ class ChatState {
      * @param {string} text
      */
     updateLastMessagePart(text) {
+        this.#isThinking = false;
         if (this.#messages.length > 0) {
             let lastMessage = this.#messages[this.#messages.length - 1];
             if (lastMessage && lastMessage.type === "agent-message" && !lastMessage.completed) {
@@ -66,12 +82,15 @@ class ChatState {
                     { ...lastMessage, text: updatedText }
                 ];
             } else {
+                // Si le dernier message n\'est pas un message agent en cours, ou s\'il est complété,
+                // on ajoute un nouveau message agent.
                 this.addMessage(text.replace(/\n/g, "<br>"), "agent-message");
             }
         }
     }
 
     completeLastMessage() {
+        this.#isThinking = false;
         if (this.#messages.length > 0) {
             let lastMessage = this.#messages[this.#messages.length - 1];
             if (lastMessage && lastMessage.type === "agent-message" && !lastMessage.completed) {
@@ -114,16 +133,36 @@ class ChatState {
             const data = await response.json();
             if (data.events && data.events.length > 0) {
                 const filteredCurrentMessages = this.#messages.filter(msg => !(msg.text === "Loading chat history..." && msg.type === "system-message"));
+
                 const historyMessages = data.events.map(/** @param {any} event */ event => {
+                    let textContent = "";
+                    let imageDataUrl = null;
+                    let mimeType = null;
+                    let messageType = event.author === 'user' ? "user-message" : "agent-message";
+
                     if (event.content && event.content.parts && event.content.parts.length > 0) {
-                        const part = event.content.parts[0];
-                        if (part.text) {
-                            return {
-                                text: part.text.replace(/\n/g, "<br>"),
-                                type: event.author === 'user' ? "user-message" : "agent-message",
-                                id: event.id
-                            };
-                        }
+                        event.content.parts.forEach(
+                            /** @param {any} part */
+                            part => {
+                                if (part.text) {
+                                    textContent += part.text.replace(/\n/g, "<br>");
+                                }
+                                // Note: Le backend actuel ne semble pas stocker/retourner les images dans l\'historique de cette manière.
+                                // Si l\'API d\'historique retournait des images, il faudrait adapter ici.
+                                // Pour l\'instant, on se concentre sur l\'affichage des images envoyées par l\'utilisateur dans la session active.
+                            });
+                    }
+                    // Si le backend renvoyait un type MIME pour les images dans l\'historique, il faudrait l\'extraire ici.
+                    // Pour l\'instant, on ne s\'attend pas à des imageDataUrl de l\'historique via cette structure.
+
+                    if (textContent || imageDataUrl) { // On ajoute seulement s'il y a du contenu
+                        return {
+                            text: textContent,
+                            type: messageType,
+                            id: event.id,
+                            imageDataUrl: imageDataUrl, // Sera null pour l\'instant depuis l\'historique
+                            mimeType: mimeType // Sera null pour l\'instant
+                        };
                     }
                     return null;
                 }).filter(
@@ -170,13 +209,17 @@ class ChatState {
         this.#ws.onmessage = (event) => {
             const data = JSON.parse(event.data);
             console.log("Received:", data);
+            if (data.type === "status" && data.message === "Agent service connected") {
+                this.#isThinking = false;
+            }
             if (data.type === "message_part" && data.text) {
                 this.updateLastMessagePart(data.text);
             } else if (data.type === "message_end") {
                 this.completeLastMessage();
             } else if (data.type === "error" && data.message) {
                 this.addMessage("Error: " + data.message, "error-message");
-            } else if (data.text) { // Cas générique pour les messages texte non structurés différemment
+                this.#isThinking = false;
+            } else if (data.text) {
                 this.addMessage(data.text, "agent-message");
             }
         };
@@ -191,6 +234,7 @@ class ChatState {
         this.#ws.onerror = (error) => {
             console.error("WebSocket error:", error);
             this.addMessage("WebSocket error. Check console.", "error-message");
+            this.#isThinking = false;
             if (this.#ws) this.#ws.close();
         };
     }
@@ -211,7 +255,16 @@ class ChatState {
             sessionId = getCookie("chat_session_id");
         }
 
-        if (!sessionId) {
+        if (sessionId) {
+            this.setCurrentSessionId(sessionId);
+            // Ne pas charger l\'historique ici si c\'est une tentative de reconnexion après une déconnexion
+            // L\'historique est déjà chargé ou sera géré différemment
+            if (!isReconnectAttempt) {
+                this.addMessage("Using existing session: " + sessionId, "system-message");
+                await this.loadChatHistory(USER_ID, sessionId);
+            }
+            this.connectToChatWebSocket(USER_ID, sessionId);
+        } else {
             console.log("No session ID available, creating a new one via WebSocket...");
             try {
                 const createSessionWsUrl = `${PUBLIC_FAST_API_WS_URL}/ws/create_session/${USER_ID}`;
@@ -232,7 +285,11 @@ class ChatState {
                         console.log("New session ID received and stored:", sessionId);
                         this.addMessage("Session created: " + sessionId, "system-message");
                         sessionWs.close();
-                        if (sessionId) this.connectToChatWebSocket(USER_ID, sessionId);
+                        if (sessionId) {
+                            // Lancer le chargement de l\'historique après avoir obtenu un nouveau session_id
+                            await this.loadChatHistory(USER_ID, sessionId);
+                            this.connectToChatWebSocket(USER_ID, sessionId);
+                        }
                     } else {
                         console.error("Failed to create session:", data);
                         this.addMessage("Error: Could not create session. " + (data.message || ""), "error-message");
@@ -256,32 +313,46 @@ class ChatState {
                     this.addMessage("Fatal error: Could not initiate session creation. Check console.", "error-message");
                 }
             }
-        } else {
-            console.log("Using existing session ID from cookies or load: ", sessionId);
-            this.setCurrentSessionId(sessionId);
-            this.addMessage("Using existing session: " + sessionId, "system-message");
-            await this.loadChatHistory(USER_ID, sessionId);
-            this.connectToChatWebSocket(USER_ID, sessionId);
         }
     }
 
     /**
      * @param {string} messageText
      */
-    sendMessage(messageText) {
+    sendTextMessage(messageText) {
         if (messageText && this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+            this.#isThinking = true;
             const payload = {
                 type: "text",
                 data: messageText
             };
-            this.#isThinking = true;
-
             this.#ws.send(JSON.stringify(payload));
-            this.#isThinking = false;
-
             this.addMessage(messageText, "user-message");
         } else {
             this.addMessage("Cannot send message. WebSocket not connected or message is empty.", "error-message");
+        }
+    }
+
+    /**
+     * @param {string} imageDataBase64 - L\'image encodée en base64 (sans le préfixe data:mime/type;base64,)
+     * @param {string} mimeType - Le type MIME de l\'image (par exemple, \'image/png\', \'image/jpeg\')
+     * @param {string} [prompt=""] - Le prompt textuel accompagnant l\'image
+     */
+    sendImageMessage(imageDataBase64, mimeType, prompt = "") {
+        if (imageDataBase64 && mimeType && this.#ws && this.#ws.readyState === WebSocket.OPEN) {
+            this.#isThinking = true;
+            const payload = {
+                type: "image",
+                data: imageDataBase64, // Le backend attend la data base64 brute
+                mime_type: mimeType,
+                prompt: prompt
+            };
+            this.#ws.send(JSON.stringify(payload));
+            // Ajoute l\'image et le prompt au store local pour affichage immédiat
+            // Le texte du message sera le prompt, et imageDataUrl contiendra l\'image pour l\'affichage local
+            this.addMessage(prompt, "user-image", null, `data:${mimeType};base64,${imageDataBase64}`, mimeType);
+        } else {
+            this.addMessage("Cannot send image. WebSocket not connected, image data or mime type missing.", "error-message");
         }
     }
 }
@@ -318,4 +389,37 @@ function setCookie(name, value, days = 7) {
         expires = "; expires=" + date.toUTCString();
     }
     document.cookie = name + "=" + (value || "") + expires + "; path=/";
+}
+
+// Pour la compatibilité avec les imports existants
+/**
+ * @param {string | null} [initialSessionIdFromLoad=null]
+ * @param {boolean} [isReconnectAttempt=false]
+ */
+export const initializeSessionAndConnect = (initialSessionIdFromLoad = null, isReconnectAttempt = false) =>
+    chatState.initializeSessionAndConnect(initialSessionIdFromLoad, isReconnectAttempt);
+
+// Pour la compatibilité avec les imports existants
+/** @deprecated Utilisez sendTextMessage ou sendImageMessage */
+export const sendMessage = (/** @type {string} */ messageText) => chatState.sendTextMessage(messageText);
+
+export const sendTextMessage = (/** @type {string} */ messageText) => chatState.sendTextMessage(messageText);
+export const sendImageMessage = (
+    /** @type {string} */ imageDataBase64,
+    /** @type {string} */ mimeType,
+    /** @type {string | undefined} */ prompt
+) => chatState.sendImageMessage(imageDataBase64, mimeType, prompt);
+
+
+export function getMessages() {
+    return chatState.messages;
+}
+export function getIsConnected() {
+    return chatState.isConnected;
+}
+export function getCurrentSessionId() {
+    return chatState.currentSessionId;
+}
+export function getIsThinking() {
+    return chatState.isThinking;
 }

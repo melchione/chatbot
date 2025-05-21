@@ -1,129 +1,89 @@
 import os
 import logging
-import base64  # Pour décoder les images
+import base64
+import uuid  # Ajout pour générer des session_id uniques
+import json  # Pour le logging des dictionnaires, si nécessaire
 from typing import Any, Optional
+
+from features.agents.marketing_agent.agent import root_agent  # Votre import
+
 from fastapi.middleware.cors import CORSMiddleware
 
-import vertexai
-from vertexai import agent_engines
-from vertexai.generative_models import Content, Part  # Ajout pour multimodal
-from google.api_core import exceptions as google_exceptions  # Ajout de l'import
-
-# from google.generativeai.types import Content, Part, Blob # Mis en commentaire pour l'instant
+# Imports ADK
+from google.adk.runners import Runner
+from google.adk.sessions import DatabaseSessionService
+import google.genai as genai  # Pour genai.types
 
 from dotenv import load_dotenv
 
 from fastapi import (
     FastAPI,
-    Request,
     WebSocket,
     WebSocketDisconnect,
-    HTTPException,  # Pour les erreurs HTTP si nécessaire
+    HTTPException,
 )
-from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import (
-    Response,
     FileResponse,
-)  # FileResponse pour servir index.html comme dans l'exemple
-from fastapi.staticfiles import StaticFiles  # Pour servir des fichiers statiques
-from pathlib import Path  # Pour la gestion des chemins
+)
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from contextlib import suppress
 
-# Configuration du logging
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# Charger les variables d'environnement
 load_dotenv()
 
-# --- Configuration Globale & Variables d'État ---
-APP_NAME = "ChatbotFastAPIServer"
-remote_app: Optional[Any] = None  # Référence à l'agent Vertex AI déployé
+APP_NAME = "ChatbotFastAPIServerWithADK"  # Nom mis à jour
+APP_NAME_ADK = "ChatbotLocalADK"  # Nom spécifique pour ADK
 
-STATIC_DIR = (
-    Path(__file__).parent / "static"
-)  # Si vous voulez servir une UI de test simple
-
-# --- Session Management (similaire à ADK, mais simplifié pour Vertex AI) ---
-# Pour cet exemple, nous n'avons pas besoin d'un service de session complexe comme dans ADK
-# car l'état est géré par l'objet `chat` de Vertex AI pour chaque connexion WebSocket.
+agent_runner: Optional[Runner] = None
+session_service = DatabaseSessionService(db_url="sqlite:///database/sessions.db")
 
 
-async def initialize_vertex_ai_agent():
-    """Initialise Vertex AI et récupère la référence à l'agent déployé."""
-    global remote_app
-    logger.info("Attempting to initialize Vertex AI and connect to the agent...")
+STATIC_DIR = Path(__file__).parent / "static"
 
-    project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-    location = os.getenv("GOOGLE_CLOUD_LOCATION")
-    agent_resource_id = os.getenv("AGENT_RESOURCE_ID")
+# Commenter/Supprimer l'initialisation de l'agent Vertex AI distant
+# async def initialize_vertex_ai_agent(): ...
 
-    if not all([project_id, location, agent_resource_id]):
-        logger.critical(
-            "Missing critical environment variables for Vertex AI. Application might not work."
-        )
-        # Lever une exception ici pourrait être plus propre pour empêcher le démarrage
-        raise RuntimeError(
-            "Missing GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, or AGENT_RESOURCE_ID env vars."
-        )
-
-    try:
-        vertexai.init(project=project_id, location=location)
-        logger.info(
-            f"Vertex AI initialized for project='{project_id}', location='{location}'."
-        )
-
-        remote_app = agent_engines.get(agent_resource_id)
-        if remote_app:
-            logger.info(f"Successfully connected to remote agent: {agent_resource_id}")
-        else:
-            logger.error(
-                f"Failed to connect to remote agent (remote_app is None): {agent_resource_id}"
-            )
-            raise RuntimeError(f"Could not connect to agent {agent_resource_id}")
-    except Exception as e:
-        logger.exception(f"Fatal error during Vertex AI agent initialization: {e}")
-        raise  # Relancer l'exception pour que FastAPI la gère au démarrage
-
-
-# --- Application FastAPI ---
 app = FastAPI(
     title=APP_NAME,
     docs_url="/docs" if os.getenv("ENVIRONMENT") != "production" else None,
     redoc_url=None,
-    # on_startup est géré par @app.on_event("startup") maintenant
 )
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,  # Si vous utilisez des cookies ou des en-têtes d'autorisation
-    allow_methods=["*"],  # Ou spécifiez des méthodes comme ["GET", "POST"]
-    allow_headers=["*"],  # Ou spécifiez des en-têtes autorisés
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
-# --- Événements de Démarrage/Arrêt de FastAPI ---
 @app.on_event("startup")
 async def startup_event():
-    logger.info("FastAPI server starting up...")
+    global agent_runner
+    logger.info("FastAPI server starting up for local ADK agent...")
     try:
-        await initialize_vertex_ai_agent()
-        if not remote_app:
-            logger.critical(
-                "Vertex AI Remote App (agent) failed to initialize. WebSocket endpoint might not function."
+        # Initialiser le Runner ADK
+        agent_runner = Runner(
+            agent=root_agent, app_name=APP_NAME_ADK, session_service=session_service
+        )
+        if agent_runner:
+            logger.info(
+                f"ADK Runner initialized successfully for agent '{root_agent.name}' and app '{APP_NAME_ADK}'."
             )
         else:
-            logger.info("Vertex AI Remote App (agent) initialized successfully.")
+            logger.critical("ADK Runner failed to initialize.")
+            # Vous pourriez vouloir empêcher le démarrage ici si le runner est crucial
     except Exception as e:
-        logger.critical(f"Error during startup: {e}", exc_info=True)
-        # Il pourrait être judicieux de ne pas démarrer l'application si l'agent ne s'initialise pas
-        # Mais FastAPI continuera, donc nous loggons une erreur critique.
+        logger.critical(f"Error during ADK Runner initialization: {e}", exc_info=True)
+        # Gérer l'erreur comme il convient (par exemple, ne pas démarrer le serveur)
 
 
-# --- Service de fichiers statiques --- (Ajout comme dans live_server.py)
 if not STATIC_DIR.is_dir():
     logger.error(f"Static directory not found at {STATIC_DIR}. UI will not be served.")
 else:
@@ -135,102 +95,97 @@ else:
         index_path = STATIC_DIR / "index.html"
         if not index_path.is_file():
             logger.error("index.html not found in static directory.")
-            return Response(content="index.html not found", status_code=404)
+            return {"error": "index.html not found"}, 404
         logger.debug("Serving index.html")
         return FileResponse(str(index_path))
 
 
-# --- WebSocket Endpoint --- (Inspiré de live_server.py et adapté pour Vertex AI)
 @app.websocket("/ws/create_session/{client_id}")
-async def create_session(websocket: WebSocket, client_id: str):
-    await websocket.accept()
-    logger.info("WebSocket client connected for session creation.")
-
-    remote_session = remote_app.create_session(user_id=client_id)
-    session_id = remote_session["id"]
-
-    await websocket.send_json({"type": "session_created", "session_id": session_id})
-
-    # Générer un ID de session unique
-
-
-# --- WebSocket Endpoint ---
-@app.websocket("/ws/{client_id}/{session_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str, session_id: str):
+async def create_session_adk(websocket: WebSocket, client_id: str):
     await websocket.accept()
     logger.info(
-        f"WebSocket client connected: User ID '{client_id}' with Session ID '{session_id}'."
+        f"ADK WebSocket client connected for session creation: User ID '{client_id}'."
     )
 
-    if not remote_app:
+    session_id = str(uuid.uuid4())  # Générer un ID de session unique
+
+    try:
+        session = await session_service.create_session(
+            app_name=APP_NAME_ADK, user_id=client_id, session_id=session_id
+        )
+        print(f"Session créée: {session}")
+    except Exception as e:
+        print(f"Avertissement: Création session échouée (peut exister): {e}")
+
+    try:
+        await websocket.send_json({"type": "session_created", "session_id": session_id})
+    except Exception as e:
         logger.error(
-            f"Remote app (Vertex AI agent) not initialized. Closing WebSocket for client {client_id}."
+            f"Failed to create ADK session for user '{client_id}': {e}", exc_info=True
         )
         await websocket.send_json(
-            {"type": "error", "message": "Chat service not available."}
+            {"type": "error", "message": f"Failed to create session: {str(e)}"}
+        )
+        await websocket.close(code=1011, reason="Session creation failed")
+
+
+@app.websocket("/ws/{client_id}/{session_id}")
+async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_id: str):
+    await websocket.accept()
+    logger.info(
+        f"ADK WebSocket client connected: User ID '{client_id}' with Session ID '{session_id}'."
+    )
+
+    if not agent_runner:
+        logger.error(
+            "ADK Runner not initialized. Closing WebSocket for client {client_id}."
+        )
+        await websocket.send_json(
+            {"type": "error", "message": "Chat service (ADK Runner) not available."}
         )
         await websocket.close(
-            code=1011, reason="Chat service not available (agent missing)"
+            code=1011, reason="Chat service not available (ADK Runner missing)"
         )
         return
 
-    # Envoyer un statut de connexion une fois que remote_app est confirmé
-    await websocket.send_json({"type": "status", "message": "Agent service connected"})
+    await websocket.send_json(
+        {"type": "status", "message": "ADK Agent service connected"}
+    )
 
     try:
         while True:
             client_message_json = await websocket.receive_json()
-            logger.info(f"Client {client_id} sent JSON: {client_message_json}")
+            logger.info(f"Client {client_id} (ADK) sent JSON: {client_message_json}")
 
             message_type = client_message_json.get("type")
-            message_data = client_message_json.get("data")
+            message_data = client_message_json.get(
+                "data"
+            )  # Chaîne texte ou chaîne base64 pour image
 
-            query_input: Any = None
+            user_content: Optional[genai.types.Content] = None
+            parts_for_content = []
 
             if message_type == "text":
                 if isinstance(message_data, str):
-                    query_input = message_data
+                    parts_for_content.append(genai.types.Part(text=message_data))
                 else:
                     logger.warning(
-                        f"Received text message with invalid data payload: {message_data}"
+                        f"Received ADK text message with invalid data payload: {message_data}"
                     )
                     await websocket.send_json(
                         {"type": "error", "message": "Invalid text payload."}
                     )
                     continue
-            elif message_type == "image":
-                if isinstance(
-                    message_data, str
-                ):  # Assuming data is base64 string for image
-                    mime_type = client_message_json.get(
-                        "mime_type", "image/png"
-                    )  # Default to png if not specified
-                    prompt = client_message_json.get(
-                        "prompt", ""
-                    )  # Optional accompanying prompt
 
-                    try:
-                        image_bytes = base64.b64decode(message_data)
-                        image_part = Part.from_data(
-                            data=image_bytes, mime_type=mime_type
-                        )
-                        parts = []
-                        if prompt:
-                            parts.append(Part.from_text(prompt))
-                        parts.append(image_part)
-                        query_input = Content(parts=parts)
-                        logger.info(
-                            f"Prepared image content for agent (prompt: '{prompt}', mime_type: {mime_type})"
-                        )
-                    except Exception as e:
-                        logger.error(f"Error processing image data: {e}", exc_info=True)
-                        await websocket.send_json(
-                            {"type": "error", "message": "Error processing image data."}
-                        )
-                        continue
-                else:
+            elif message_type == "image":
+                mime_type = client_message_json.get("mime_type", "image/png")
+                prompt = client_message_json.get("prompt", "")
+
+                if not isinstance(
+                    message_data, str
+                ):  # message_data doit être une chaîne base64
                     logger.warning(
-                        f"Received image message with invalid data payload: {message_data}"
+                        f"Received ADK image message with invalid data (not string): {message_data}"
                     )
                     await websocket.send_json(
                         {
@@ -239,8 +194,37 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, session_id: s
                         }
                     )
                     continue
+
+                try:
+                    if prompt:  # Texte en premier
+                        parts_for_content.append(genai.types.Part(text=prompt))
+
+                    image_bytes = base64.b64decode(message_data)
+                    image_blob = genai.types.Blob(mime_type=mime_type, data=image_bytes)
+                    image_part = genai.types.Part(inline_data=image_blob)
+                    parts_for_content.append(image_part)
+
+                    logger.info(
+                        f"Prepared ADK image content (prompt: '{prompt}', mime_type: {mime_type})"
+                    )
+                except base64.binascii.Error as b64_error:
+                    logger.error(
+                        f"Error decoding base64 image data for ADK: {b64_error}",
+                        exc_info=True,
+                    )
+                    await websocket.send_json(
+                        {"type": "error", "message": "Invalid base64 image data."}
+                    )
+                    continue
+                except Exception as e:
+                    logger.error(f"Error processing ADK image data: {e}", exc_info=True)
+                    await websocket.send_json(
+                        {"type": "error", "message": "Error processing image data."}
+                    )
+                    continue
+
             else:
-                logger.warning(f"Unknown message type received: {message_type}")
+                logger.warning(f"Unknown ADK message type received: {message_type}")
                 await websocket.send_json(
                     {
                         "type": "error",
@@ -249,158 +233,149 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, session_id: s
                 )
                 continue
 
-            if query_input is None:
+            if not parts_for_content:
                 logger.info(
-                    f"No valid query_input to send to agent for client {client_id}."
+                    f"No content parts to send to ADK agent for client {client_id}."
                 )
-                await websocket.send_json(
-                    {"type": "message_end"}
-                )  # Send message_end to signify processing turn complete
+                await websocket.send_json({"type": "message_end"})
                 continue
 
-            logger.info(
-                f"Sending to agent for client {client_id} (session {session_id}): {type(query_input)}"
+            user_content = genai.types.Content(parts=parts_for_content, role="user")
+            logger.debug(
+                f"Sending to ADK agent for client {client_id} (session {session_id}): {str(user_content)}"
             )
 
-            # Utiliser remote_app.stream_query() avec les paramètres spécifiés
-            stream = remote_app.stream_query(
-                user_id=client_id,  # Utiliser le client_id de l'URL comme user_id
+            event_received_count = 0
+            async for event in agent_runner.run_async(
+                user_id=client_id,
                 session_id=session_id,
-                message=query_input,  # Peut être str ou Content
-            )
+                new_message=user_content,
+            ):
+                event_received_count += 1
+                logger.debug(
+                    f"ADK Agent event for {client_id} (session: {session_id}): RAW EVENT: {event}"
+                )
 
-            event_received = False
-            for event in stream:  # Itérer sur les événements du stream
-                event_received = True
+                # Adapter l'extraction du texte selon la structure des événements ADK
                 text_content = None
-                try:
-                    if (
-                        isinstance(event, dict)
-                        and "content" in event
-                        and isinstance(event["content"], dict)
-                        and "parts" in event["content"]
-                        and isinstance(event["content"]["parts"], list)
-                        and len(event["content"]["parts"]) > 0
-                        and isinstance(event["content"]["parts"][0], dict)
-                        and "text" in event["content"]["parts"][0]
-                    ):
-                        text_content = event["content"]["parts"][0]["text"]
-                except Exception as e:
-                    logger.warning(
-                        f"Error accessing text in event structure: {e} - Event: {event}"
-                    )
-
-                if text_content:
-                    logger.debug(
-                        f"Agent response event for {client_id} (session: {session_id}): {text_content}"
+                if event.is_final_response() and event.content and event.content.parts:
+                    text_content = event.content.parts[0].text
+                    logger.info(
+                        f"ADK Agent FINAL response for {client_id}: {text_content}"
                     )
                     await websocket.send_json(
-                        {"type": "message_part", "text": text_content}
+                        {"type": "message_part", "text": text_content, "is_final": True}
                     )
-                else:
-                    # Log l'événement brut si le texte n'a pas pu être extrait selon le chemin attendu
-                    logger.debug(
-                        f"Agent response event for {client_id} (session: {session_id}) (raw or no extractable text): {event}"
-                    )
+                elif (
+                    event.content and event.content.parts
+                ):  # Pour les parties intermédiaires
+                    # Il faudra peut-être ajuster cela si les événements ADK ont une structure différente pour les message_part
+                    # Pour l'instant, on suppose que les parties de contenu intermédiaires ont aussi du texte
+                    intermediate_text = event.content.parts[0].text
+                    if intermediate_text:
+                        logger.info(
+                            f"ADK Agent INTERMEDIATE response for {client_id}: {intermediate_text}"
+                        )
+                        await websocket.send_json(
+                            {
+                                "type": "message_part",
+                                "text": intermediate_text,
+                                "is_final": False,
+                            }
+                        )
 
-            if not event_received:
+            if event_received_count == 0:
                 logger.info(
-                    f"No events received from agent for client {client_id} after stream_query with input type '{message_type}'."
+                    f"No events received from ADK agent for client {client_id} after run_async with input type '{message_type}'."
                 )
 
             await websocket.send_json({"type": "message_end"})
-            logger.info(f"Finished streaming agent response to client {client_id}")
+            logger.info(f"Finished streaming ADK agent response to client {client_id}")
 
     except WebSocketDisconnect:
-        logger.info(f"WebSocket client {client_id} disconnected.")
-    except google_exceptions.GoogleAPIError as e:
-        logger.error(
-            f"Google API error during chat with {client_id}: {e}", exc_info=True
-        )
-        error_message = f"An error occurred with the chat service: {type(e).__name__}"
-        if hasattr(e, "message"):
-            error_message += f" - {e.message}"
-        try:
-            await websocket.send_json({"type": "error", "message": error_message})
-        except Exception as send_err:
-            logger.error(f"Failed to send error to client {client_id}: {send_err}")
+        logger.info(f"ADK WebSocket client {client_id} disconnected.")
+    # Retirer la gestion spécifique des erreurs google_exceptions pour l'instant
+    # except google_exceptions.GoogleAPIError as e: ...
     except Exception as e:
         logger.error(
-            f"Error in WebSocket endpoint for client {client_id}: {e}", exc_info=True
+            f"Error in ADK WebSocket endpoint for client {client_id}: {e}",
+            exc_info=True,
         )
         try:
             await websocket.send_json(
-                {"type": "error", "message": "An unexpected error occurred."}
+                {
+                    "type": "error",
+                    "message": "An unexpected error occurred with ADK agent.",
+                }
             )
         except Exception as send_err:
             logger.error(
-                f"Failed to send unexpected error to client {client_id}: {send_err}"
+                f"Failed to send unexpected ADK error to client {client_id}: {send_err}"
             )
     finally:
-        logger.info(f"Closing WebSocket connection for client {client_id}.")
-        # Pas besoin de `chat.close()` explicitement ici, la session est gérée par l'objet chat.
-        # Si des ressources spécifiques devaient être libérées, ce serait ici.
-        with suppress(Exception):
+        logger.info(f"Closing ADK WebSocket connection for client {client_id}.")
+        with suppress(Exception):  # Safely attempt to close
             await websocket.close()
 
 
-# --- Nouvel Endpoint HTTP pour récupérer l'historique de session ---
+# --- Endpoint HTTP pour récupérer l'historique de session (Adaptation pour ADK) ---
 @app.get("/session_history/{user_id}/{session_id}")
-async def get_session_history(user_id: str, session_id: str):
+async def get_session_history_adk(user_id: str, session_id: str):
     logger.info(
-        f"Attempting to retrieve session history for User ID: {user_id}, Session ID: {session_id}"
+        f"Attempting to retrieve ADK session history for User ID: {user_id}, Session ID: {session_id}"
     )
-    if not remote_app:
-        logger.error(
-            "Remote app (Vertex AI agent) not initialized. Cannot fetch session history."
-        )
-        raise HTTPException(status_code=503, detail="Chat service not available.")
-
     try:
-        session_data = remote_app.get_session(user_id=user_id, session_id=session_id)
-        if session_data and "events" in session_data:
+        session_data = await session_service.get_session(
+            app_name=APP_NAME_ADK, user_id=user_id, session_id=session_id
+        )
+        if session_data and hasattr(session_data, "events") and session_data.events:
+            # Convertir l'historique des messages (objets Content) en un format sérialisable JSON
+            # que le client peut comprendre. Par exemple, une liste de dictionnaires.
+            serializable_history = []
+            for msg_content in session_data.events:
+                # On peut utiliser model_dump_json ou construire un dictionnaire manuellement
+                # Pour la simplicité, on va juste prendre le texte de la première partie si disponible.
+                # Le client devra être adapté si une structure plus riche est nécessaire.
+                part_text = ""
+                if msg_content.content.parts and msg_content.content.parts[0].text:
+                    part_text = msg_content.content.parts[0].text
+
+                serializable_history.append(
+                    {
+                        "author": msg_content.author,
+                        "content": msg_content.content,
+                        "id": msg_content.id,
+                        # Simplifié, ne gère pas les images dans l'historique pour l'instant
+                        # Idéalement, ici on sérialiserait toute la structure de Content
+                    }
+                )
             logger.info(
-                f"Successfully retrieved {len(session_data['events'])} events for session {session_id}."
+                f"Successfully retrieved {len(serializable_history)} messages from ADK session {session_id}."
             )
-            return {"events": session_data["events"]}
-        elif (
-            session_data
-        ):  # session_data existe mais pas d'events (peu probable avec la structure donnée)
-            logger.warning(
-                f"Session {session_id} found but no 'events' key or events are empty."
-            )
-            return {"events": []}
+            return {
+                "events": serializable_history
+            }  # "events" est gardé pour compatibilité client
         else:
             logger.warning(
-                f"Session not found for User ID: {user_id}, Session ID: {session_id}"
+                f"ADK Session not found or history empty for User ID: {user_id}, Session ID: {session_id}"
             )
-            # Il est important de ne pas lever une erreur 404 ici si une session non trouvée est un cas "normal"
-            # pour le client qui essaie de charger l'historique. Le client peut créer une nouvelle session.
-            # Renvoyer une liste vide permet au client de continuer sans erreur bloquante.
             return {"events": []}
-    except google_exceptions.NotFound:
-        logger.warning(
-            f"Session not found via Google API for User ID: {user_id}, Session ID: {session_id}"
-        )
-        return {
-            "events": []
-        }  # Traiter comme non trouvé, le client créera une nouvelle session
+    # Gérer les exceptions spécifiques à InMemorySessionService si nécessaire, sinon une Exception générale suffit.
     except Exception as e:
         logger.error(
-            f"Error retrieving session history for User ID: {user_id}, Session ID: {session_id}: {e}",
+            f"Error retrieving ADK session history for User ID: {user_id}, Session ID: {session_id}: {e}",
             exc_info=True,
         )
-        raise HTTPException(status_code=500, detail="Error retrieving session history.")
+        raise HTTPException(
+            status_code=500, detail="Error retrieving ADK session history."
+        )
 
 
-# --- Lancement du serveur (pour exécution directe avec Uvicorn) ---
 if __name__ == "__main__":
-    # Assurez-vous que les variables d'environnement sont chargées si ce n'est déjà fait
     load_dotenv()
-
     server_host = os.getenv("SERVER_HOST", "127.0.0.1")
     raw_port = os.getenv("SERVER_PORT", "8000")
-    server_port = 8000  # Valeur par défaut si la conversion échoue
+    server_port = 8000
     try:
         server_port = int(raw_port)
     except ValueError:
@@ -409,7 +384,7 @@ if __name__ == "__main__":
         )
 
     logger.info(
-        f"Starting FastAPI server (direct run) on http://{server_host}:{server_port}"
+        f"Starting FastAPI server (direct run with ADK) on http://{server_host}:{server_port}"
     )
     try:
         import uvicorn
