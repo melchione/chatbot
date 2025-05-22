@@ -1,7 +1,6 @@
 <script>
     import { onMount } from "svelte";
     import { chatState } from "$lib/chatLogic.svelte.js";
-    import { enhance } from "$app/forms";
 
     let messageInput = $state("");
     /** @type {HTMLDivElement | null} */
@@ -217,8 +216,6 @@
 </div>
 <div class="py-4">
     <form
-        method="POST"
-        use:enhance
         onsubmit={handleSubmit}
         class="flex items-center py-1 px-4 max-w-2xl mx-auto my-2 border border-gray-300 rounded-full"
     >

@@ -106,7 +106,7 @@
                                 if (!existingMessage) { // Eviter les doublons si la fonction est appelée plusieurs fois
                                     const messageElement = document.createElement("div");
                                     messageElement.classList.add("message", messageType);
-                                    messageElement.innerHTML = part.text.replace(/\n/g, "<br>");
+                                    messageElement.innerHTML = part.text;
                                     messageElement.dataset.eventId = event.id; // Marqueur pour éviter doublons
                                     messagesDiv.appendChild(messageElement);
                                 }
@@ -201,9 +201,9 @@
                     // Append to the last agent message if it exists, otherwise create new
                     let lastMessage = messagesDiv.lastElementChild;
                     if (lastMessage && lastMessage.classList.contains("agent-message") && !lastMessage.dataset.completed) {
-                        lastMessage.innerHTML += data.text.replace(/\n/g, "<br>");
+                        lastMessage.innerHTML += data;
                     } else {
-                        addMessage(data.text.replace(/\n/g, "<br>"), "agent-message");
+                        addMessage(data.text, "agent-message");
                     }
                 } else if (data.type === "message_end") {
                     let lastMessage = messagesDiv.lastElementChild;
@@ -235,7 +235,7 @@
         function addMessage(text, type) {
             const messageElement = document.createElement("div");
             messageElement.classList.add("message", type);
-            messageElement.innerHTML = text; // Use innerHTML to render <br>
+            messageElement.innerHTML = text;
             messagesDiv.appendChild(messageElement);
             scrollToBottom();
         }

@@ -6,7 +6,7 @@ from features.agents.marketing_agent.prompt import get_description, get_instruct
 
 root_agent = Agent(
     name="marketing_agent",
-    model=LiteLlm(model=Models.CLAUDE_SONNET_3_7),
+    model=LiteLlm(model=Models.CLAUDE_SONNET),
     description=get_description(),
     instruction=get_instruction(),
 )

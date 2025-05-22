@@ -1,7 +1,35 @@
 <script>
     import { onMount } from "svelte";
-    import { chatState } from "$lib/chatLogic.svelte.js";
-    import { enhance } from "$app/forms";
+    import { chatState, createNewSession } from "$lib/chatLogic.svelte.js";
+    import { marked } from "marked";
+
+    const USER_ID = "test_user";
+
+    // Configuration de marked pour la sécurité et les fonctionnalités
+    marked.setOptions({
+        breaks: true, // Convertit les sauts de ligne en <br>
+        gfm: true, // Support GitHub Flavored Markdown
+    });
+
+    // Fonction pour parser le markdown
+    function parseMarkdown(text) {
+        try {
+            const result = marked.parse(text);
+            // marked.parse peut retourner une string ou une Promise<string>
+            if (typeof result === "string") {
+                return result;
+            } else {
+                // Si c'est une Promise, on retourne le texte original pour éviter les erreurs
+                console.warn(
+                    "Marked returned a Promise, falling back to original text",
+                );
+                return text;
+            }
+        } catch (error) {
+            console.error("Error parsing markdown:", error);
+            return text; // Fallback au texte brut si erreur
+        }
+    }
 
     let messageInput = $state("");
     /** @type {HTMLDivElement | null} */
@@ -174,30 +202,66 @@
             class="flex-grow overflow-y-auto p-4 mx-4 mb-4"
             onscroll={handleScroll}
         >
-            {#each chatState.messages as message (message.id)}
+            {#if chatState.showWelcomeMessage}
+                <!-- Message de bienvenue -->
                 <div
-                    class="mb-2.5 p-2.5 rounded-2xl break-words leading-normal flex flex-col {message.type ===
-                        'user-message' || message.type === 'user-image'
-                        ? 'bg-blue-600 text-white max-w-[75%]  ml-auto rounded-br-md'
-                        : ''} {message.type === 'agent-message'
-                        ? 'bg-gray-200 text-gray-800 max-w-[75%]  mr-auto rounded-bl-md'
-                        : ''} {message.type === 'system-message'
-                        ? 'italic text-gray-500 text-center text-sm py-1'
-                        : ''} {message.type === 'error-message'
-                        ? 'bg-red-100 text-red-700 border border-red-300 font-bold rounded-md'
-                        : ''}"
-                    data-event-id={message.id}
+                    class="flex flex-col items-center justify-center h-full text-center"
                 >
-                    {#if message.type === "user-image" && message.imageDataUrl}
-                        <img
-                            src={message.imageDataUrl}
-                            alt="User upload"
-                            class="max-w-full max-h-52 rounded-lg mb-1.5"
-                        />
-                    {/if}
-                    {@html message.text}
+                    <div class="max-w-md mx-auto">
+                        <h2 class="text-3xl font-bold text-gray-800 mb-4">
+                            Bienvenue sur Agency Flow !
+                        </h2>
+                        <p class="text-lg text-gray-600 mb-6 leading-relaxed">
+                            Votre assistant IA intelligent est prêt à vous
+                            aider. Pour commencer une nouvelle conversation,
+                            créez une session ou sélectionnez une session
+                            existante dans la barre latérale.
+                        </p>
+                        <div class="mb-4">
+                            <button
+                                class="bg-blue-600 cursor-pointer hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 shadow-md"
+                                onclick={() => createNewSession(USER_ID)}
+                            >
+                                Créer une nouvelle session
+                            </button>
+                        </div>
+                        <p class="text-sm text-gray-500">
+                            Vous pouvez également partager des images et
+                            recevoir des réponses personnalisées.
+                        </p>
+                    </div>
                 </div>
-            {/each}
+            {:else}
+                <!-- Messages normaux -->
+                {#each chatState.messages as message (message.id)}
+                    <div
+                        class="chat_message mb-2.5 p-2.5 rounded-2xl break-words leading-normal flex flex-col {message.type ===
+                            'user-message' || message.type === 'user-image'
+                            ? 'bg-blue-600 text-white max-w-[75%]  ml-auto rounded-br-md'
+                            : ''} {message.type === 'agent-message'
+                            ? 'bg-white text-gray-800 max-w-[75%]  mr-auto rounded-bl-md'
+                            : ''} {message.type === 'system-message'
+                            ? 'italic text-gray-500 text-center text-sm py-1'
+                            : ''} {message.type === 'error-message'
+                            ? 'bg-red-100 text-red-700 border border-red-300 font-bold rounded-md'
+                            : ''}"
+                        data-event-id={message.id}
+                    >
+                        {#if message.type === "user-image" && message.imageDataUrl}
+                            <img
+                                src={message.imageDataUrl}
+                                alt="User upload"
+                                class="max-w-full max-h-52 rounded-lg mb-1.5"
+                            />
+                        {/if}
+                        {#if message.type === "agent-message"}
+                            {@html parseMarkdown(message.text)}
+                        {:else}
+                            {@html message.text}
+                        {/if}
+                    </div>
+                {/each}
+            {/if}
         </div>
 
         {#if imagePreviewUrl}
@@ -218,8 +282,6 @@
     </div>
     <div class="py-4">
         <form
-            method="POST"
-            use:enhance
             onsubmit={handleSubmit}
             class="flex items-center py-1 px-4 max-w-2xl mx-auto my-2 border border-gray-300 rounded-full"
         >
@@ -259,3 +321,107 @@
         </form>
     </div>
 </div>
+
+<style>
+    /* Styles pour le contenu Markdown dans les messages d'agent */
+    :global(.chat_message h1),
+    :global(.chat_message h2),
+    :global(.chat_message h3),
+    :global(.chat_message h4),
+    :global(.chat_message h5),
+    :global(.chat_message h6) {
+        font-weight: bold;
+        margin: 0.5em 0 0.3em 0;
+        line-height: 1.2;
+        color: inherit;
+    }
+
+    :global(.chat_message h1) {
+        font-size: 1.5em;
+    }
+    :global(.chat_message h2) {
+        font-size: 1.3em;
+    }
+    :global(.chat_message h3) {
+        font-size: 1.1em;
+    }
+
+    :global(.chat_message p) {
+        margin: 0.5em 0;
+    }
+
+    :global(.chat_message ul),
+    :global(.chat_message ol) {
+        margin: 0.5em 0;
+        padding-left: 1.5em;
+    }
+
+    :global(.chat_message li) {
+        margin: 0.2em 0;
+        list-style-type: disc;
+    }
+
+    :global(.chat_message code) {
+        background-color: rgba(0, 0, 0, 0.1);
+        padding: 0.2em 0.4em;
+        border-radius: 0.25em;
+        font-family: "Courier New", Courier, monospace;
+        font-size: 0.9em;
+    }
+
+    :global(.chat_message pre) {
+        background-color: rgba(0, 0, 0, 0.1);
+        padding: 1em;
+        border-radius: 0.5em;
+        overflow-x: auto;
+        margin: 0.5em 0;
+    }
+
+    :global(.chat_message pre code) {
+        background-color: transparent;
+        padding: 0;
+    }
+
+    :global(.chat_message blockquote) {
+        border-left: 3px solid #666;
+        margin: 0.5em 0;
+        padding-left: 1em;
+        font-style: italic;
+        color: #555;
+    }
+
+    :global(.chat_message table) {
+        border-collapse: collapse;
+        margin: 0.5em 0;
+        width: 100%;
+    }
+
+    :global(.chat_message th),
+    :global(.chat_message td) {
+        border: 1px solid #999;
+        padding: 0.5em;
+        text-align: left;
+    }
+
+    :global(.chat_message th) {
+        background-color: rgba(0, 0, 0, 0.1);
+        font-weight: bold;
+    }
+
+    :global(.chat_message strong) {
+        font-weight: bold;
+    }
+
+    :global(.chat_message em) {
+        font-style: italic;
+    }
+
+    :global(.chat_message a) {
+        color: #0066cc;
+        text-decoration: underline;
+    }
+
+    :global(.chat_message a:hover) {
+        text-decoration: none;
+    }
+</style>

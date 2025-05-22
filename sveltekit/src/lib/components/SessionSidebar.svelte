@@ -4,6 +4,7 @@
         switchSession,
         getUserSessions,
         getCurrentSessionId,
+        deleteSelectedSession,
     } from "$lib/chatLogic.svelte.js";
 
     // USER_ID est défini dans chatLogic, mais nous en avons besoin ici pour les actions
@@ -36,6 +37,21 @@
         }
     }
 
+    /**
+     * @param {Event} e
+     * @param {string} sessionId
+     */
+    async function confirmAndDelete(e, sessionId) {
+        e.stopPropagation(); // Empêche le clic de déclencher handleSwitchSession sur le <li> parent
+        if (
+            window.confirm(
+                `Êtes-vous sûr de vouloir supprimer la session ${sessionId.substring(0, 8)}...?`,
+            )
+        ) {
+            await deleteSelectedSession(USER_ID, sessionId);
+        }
+    }
+
     /** @param {number | undefined} timestamp */
     function formatDate(timestamp) {
         if (!timestamp) return "N/A"; // Si last_update_time n'est pas disponible
@@ -48,7 +64,7 @@
 <div class="w-[280px] p-4 flex flex-col h-full">
     <button
         class="bg-green-500 text-white py-3 px-4 rounded-md cursor-pointer text-base mb-5 transition-colors duration-200 hover:bg-green-600"
-        onclick={handleCreateNewSession}
+        on:click={handleCreateNewSession}
     >
         Nouvelle Session (+)
     </button>
@@ -56,22 +72,34 @@
         {#if sessions && sessions.length > 0}
             {#each sessions as session (session.session_id)}
                 <li
-                    class="p-3 bg-white/50 backdrop-blur-xl my-1 cursor-pointer transition-colors duration-200 hover:bg-gray-200 last:border-b-0 {session.session_id ===
+                    class="p-3 my-1 cursor-pointer transition-colors duration-200 hover:bg-gray-200 last:border-b-0 {session.session_id ===
                     currentSessionId
-                        ? 'bg-blue-100 font-bold border-l-[3px] border-blue-500 pl-2'
+                        ? 'bg-blue-100 font-bold bg-white/50 backdrop-blur-xl'
                         : ''}"
-                    onclick={() => handleSwitchSession(session.session_id)}
+                    on:click={() => handleSwitchSession(session.session_id)}
                     role="button"
                     tabindex="0"
-                    onkeydown={(e) =>
+                    on:keydown={(e) =>
                         e.key === "Enter" &&
                         handleSwitchSession(session.session_id)}
                 >
-                    <div class="text-sm text-gray-800 mb-1">
-                        Session: {session.session_id.substring(0, 8)}...
-                    </div>
-                    <div class="text-xs text-gray-500">
-                        {formatDate(session.last_update_time)}
+                    <div class="flex justify-between items-center">
+                        <div class="text-sm text-gray-800 mb-1">
+                            {formatDate(session.last_update_time)}
+                        </div>
+                        <button
+                            on:click={(e) =>
+                                confirmAndDelete(e, session.session_id)}
+                            on:keydown={(e) => {
+                                e.stopPropagation();
+                                if (e.key === "Enter")
+                                    confirmAndDelete(e, session.session_id);
+                            }}
+                            class="text-red-500 hover:text-red-700 p-1 rounded-full hover:bg-red-100 transition-colors duration-150 text-sm"
+                            aria-label="Supprimer la session"
+                        >
+                            &#x2715; <!-- C'est un X (multiplication sign) -->
+                        </button>
                     </div>
                 </li>
             {/each}

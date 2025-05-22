@@ -35,9 +35,17 @@ class ChatState {
     /** @type {Array<UserSession>} */
     _userSessions = $state([]);
     _isSwitchingSession = $state(false); // Pour éviter la reconnexion auto pendant un switch manuel
+    _showWelcomeMessage = $state(false); // Pour afficher le message de bienvenue
+    _messageIdCounter = 0; // Compteur pour générer des IDs uniques
 
     constructor() {
         // Initialisation si nécessaire, ou laisser vide si $state gère l'initialisation
+    }
+
+    // Méthode pour générer un ID unique
+    _generateUniqueId() {
+        this._messageIdCounter++;
+        return `msg_${Date.now()}_${this._messageIdCounter}_${Math.random().toString(36).substr(2, 9)}`;
     }
 
     // Getters pour l'accès en lecture seule de l'extérieur si nécessaire
@@ -62,6 +70,10 @@ class ChatState {
         return this._userSessions;
     }
 
+    get showWelcomeMessage() {
+        return this._showWelcomeMessage;
+    }
+
     // Méthodes pour modifier l'état
     /**
      * @param {string} text - Le contenu textuel du message (ou prompt pour une image)
@@ -77,7 +89,7 @@ class ChatState {
         const newMessage = {
             text,
             type,
-            id: eventId || Date.now() + Math.random().toString(36),
+            id: eventId || this._generateUniqueId(),
             imageDataUrl,
             mimeType
         };
@@ -92,7 +104,7 @@ class ChatState {
         if (this._messages.length > 0) {
             let lastMessage = this._messages[this._messages.length - 1];
             if (lastMessage && lastMessage.type === "agent-message" && !lastMessage.completed) {
-                const updatedText = lastMessage.text + text.replace(/\n/g, "<br>");
+                const updatedText = lastMessage.text + text;
                 this._messages = [
                     ...this._messages.slice(0, -1),
                     { ...lastMessage, text: updatedText }
@@ -100,8 +112,11 @@ class ChatState {
             } else {
                 // Si le dernier message n\'est pas un message agent en cours, ou s\'il est complété,
                 // on ajoute un nouveau message agent.
-                this.addMessage(text.replace(/\n/g, "<br>"), "agent-message");
+                this.addMessage(text, "agent-message");
             }
+        } else {
+            // Si aucun message n'existe, créer le premier message
+            this.addMessage(text, "agent-message");
         }
     }
 
@@ -141,7 +156,10 @@ class ChatState {
      * @param {string} sessionId
      */
     async loadChatHistory(userId, sessionId) {
-        this.addMessage("Loading chat history...", "system-message");
+        // Nettoyer d'abord les messages existants pour éviter les doublons
+        this.clearMessages();
+        this.addMessage("Loading chat history...", "system-message", "loading-history");
+
         try {
             const httpBaseUrl = PUBLIC_FAST_API_URL;
             const historyUrl = `${httpBaseUrl}/session_history/${userId}/${sessionId}`;
@@ -152,7 +170,8 @@ class ChatState {
             }
             const data = await response.json();
             if (data.events && data.events.length > 0) {
-                const filteredCurrentMessages = this._messages.filter(msg => !(msg.text === "Loading chat history..." && msg.type === "system-message"));
+                // Supprimer le message de loading
+                this._messages = this._messages.filter(msg => msg.id !== "loading-history");
 
                 const historyMessages = data.events.map(/** @param {any} event */ event => {
                     let textContent = "";
@@ -165,30 +184,25 @@ class ChatState {
                             /** @param {any} part */
                             part => {
                                 if (part.text) {
-                                    textContent += part.text.replace(/\n/g, "<br>");
+                                    textContent += part.text;
                                 }
                                 if (part.inlineData && part.inlineData.data && part.inlineData.mimeType) {
                                     imageDataUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
                                     mimeType = part.inlineData.mimeType;
                                     if (event.author === 'user') {
                                         messageType = "user-image";
-                                    } else {
-                                        // Si vous voulez différencier les images de l'agent:
-                                        // messageType = "agent-image"; 
-                                        // Sinon, gardez "agent-message" et l'image s'affichera avec le texte.
-                                        // Pour l'instant, si l'agent envoie une image, on la traite comme une partie d'un message agent normal
-                                        // et l'image sera affichée par la logique du composant svelte si imageDataUrl est présent.
-                                        // La classe CSS pourrait avoir besoin d'ajustement pour les images de l'agent.
                                     }
                                 }
                             });
                     }
 
                     if (textContent || imageDataUrl) { // On ajoute seulement s'il y a du contenu
+                        // Utiliser l'ID de l'événement du serveur s'il existe, sinon générer un ID unique
+                        const messageId = event.id || `history_${this._generateUniqueId()}`;
                         return {
                             text: textContent,
                             type: messageType,
-                            id: event.id,
+                            id: messageId,
                             imageDataUrl: imageDataUrl,
                             mimeType: mimeType
                         };
@@ -201,17 +215,27 @@ class ChatState {
                     */
                     m => m !== null
                 );
-                this._messages = [...filteredCurrentMessages, ...historyMessages];
-                this.addMessage("Chat history loaded.", "system-message");
+
+                // S'assurer qu'il n'y a pas de doublons d'ID
+                const uniqueHistoryMessages = historyMessages.filter((/** @type {Message} */ message, /** @type {number} */ index, /** @type {Message[]} */ array) =>
+                    array.findIndex((/** @type {Message} */ m) => m.id === message.id) === index
+                );
+
+                this._messages = [...uniqueHistoryMessages];
+                this.addMessage("Chat history loaded.", "system-message", "history-loaded");
             } else {
-                this.addMessage("No previous chat history found or session is new.", "system-message");
+                // Supprimer le message de loading
+                this._messages = this._messages.filter(msg => msg.id !== "loading-history");
+                this.addMessage("No previous chat history found or session is new.", "system-message", "no-history");
             }
         } catch (error) {
             console.error("Error loading chat history:", error);
+            // Supprimer le message de loading
+            this._messages = this._messages.filter(msg => msg.id !== "loading-history");
             if (error instanceof Error) {
-                this.addMessage("Error loading chat history: " + error.message, "error-message");
+                this.addMessage("Error loading chat history: " + error.message, "error-message", "history-error");
             } else {
-                this.addMessage("An unknown error occurred while loading chat history.", "error-message");
+                this.addMessage("An unknown error occurred while loading chat history.", "error-message", "history-error-unknown");
             }
         }
     }
@@ -232,7 +256,7 @@ class ChatState {
         this._ws.onopen = () => {
             console.log("Connected to WebSocket server with User ID:", userId, "and Session ID:", sessionId);
             this.setConnected(true);
-            this.addMessage("Connected to agent.", "system-message");
+            this.addMessage("Connected to agent.", "system-message", "connected-to-agent");
             this._isSwitchingSession = false; // Réinitialiser après une connexion réussie
         };
 
@@ -247,10 +271,12 @@ class ChatState {
             } else if (data.type === "message_end") {
                 this.completeLastMessage();
             } else if (data.type === "error" && data.message) {
-                this.addMessage("Error: " + data.message, "error-message");
+                const errorId = data.id || `error_${this._generateUniqueId()}`;
+                this.addMessage("Error: " + data.message, "error-message", errorId);
                 this._isThinking = false;
             } else if (data.text) {
-                this.addMessage(data.text, "agent-message");
+                const messageId = data.id || `ws_${this._generateUniqueId()}`;
+                this.addMessage(data.text, "agent-message", messageId);
             }
         };
 
@@ -259,7 +285,7 @@ class ChatState {
             this.setConnected(false);
             // Uniquement tenter de reconnecter si ce n'est pas un changement de session manuel
             if (!this._isSwitchingSession) {
-                this.addMessage("Disconnected. Attempting to reconnect in 5 seconds...", "system-message");
+                this.addMessage("Disconnected. Attempting to reconnect in 5 seconds...", "system-message", "reconnecting-msg");
                 setTimeout(() => this.initializeSessionAndConnect(null, true), 5000);
             } else {
                 console.log("WebSocket closed due to session switch. No auto-reconnect.");
@@ -269,7 +295,7 @@ class ChatState {
 
         this._ws.onerror = (error) => {
             console.error("WebSocket error:", error);
-            this.addMessage("WebSocket error. Check console.", "error-message");
+            this.addMessage("WebSocket error. Check console.", "error-message", "ws-error");
             this._isThinking = false;
             if (this._ws) this._ws.close();
         };
@@ -282,7 +308,7 @@ class ChatState {
     async initializeSessionAndConnect(initialSessionIdFromLoad = null, isReconnectAttempt = false) {
         this.setConnected(false);
         if (!isReconnectAttempt) {
-            this.addMessage("Initializing session...", "system-message");
+            this.addMessage("Initializing session...", "system-message", "initializing-session");
         } else {
             // Si c'est une tentative de reconnexion, ne pas afficher "Initializing session..." à nouveau
             // mais s'assurer que isSwitchingSession est false pour permettre la reconnexion
@@ -300,6 +326,7 @@ class ChatState {
         await this.loadUserSessions(USER_ID);
 
         if (sessionId) {
+            this._showWelcomeMessage = false;
             this.setCurrentSessionId(sessionId);
             // Ne pas charger l\'historique ici si c\'est une tentative de reconnexion après une déconnexion
             // L\'historique est déjà chargé ou sera géré différemment
@@ -309,56 +336,20 @@ class ChatState {
             }
             this.connectToChatWebSocket(USER_ID, sessionId);
         } else {
-            console.log("No session ID available, creating a new one via WebSocket...");
-            try {
-                const createSessionWsUrl = `${PUBLIC_FAST_API_WS_URL}/ws/create_session/${USER_ID}`;
-                const sessionWs = new WebSocket(createSessionWsUrl);
-
-                sessionWs.onopen = () => {
-                    console.log("Connected to create_session endpoint.");
-                };
-
-                sessionWs.onmessage = async (event) => {
-                    const data = JSON.parse(event.data);
-                    if (data.type === "session_created" && data.session_id) {
-                        sessionId = data.session_id;
-                        if (sessionId) {
-                            setCookie("chat_session_id", sessionId);
-                        }
-                        this.setCurrentSessionId(sessionId);
-                        console.log("New session ID received and stored:", sessionId);
-                        this.addMessage("Session created: " + sessionId, "system-message");
-                        sessionWs.close();
-                        if (sessionId) {
-                            // Lancer le chargement de l\'historique après avoir obtenu un nouveau session_id
-                            this.clearMessages(); // Vider les messages précédents
-                            this.addMessage("New session created: " + sessionId, "system-message");
-                            await this.loadChatHistory(USER_ID, sessionId);
-                            this.connectToChatWebSocket(USER_ID, sessionId);
-                            await this.loadUserSessions(USER_ID); // Recharger la liste des sessions
-                        }
-                    } else {
-                        console.error("Failed to create session:", data);
-                        this.addMessage("Error: Could not create session. " + (data.message || ""), "error-message");
-                    }
-                };
-                sessionWs.onerror = (error) => {
-                    console.error("WebSocket error during session creation:", error);
-                    this.addMessage("Error: Could not connect to create session. Check console.", "error-message");
-                    this.setConnected(false);
-                };
-
-                sessionWs.onclose = () => {
-                    console.log("Session creation WebSocket closed.");
-                };
-
-            } catch (error) {
-                console.error("Failed to connect to session creation endpoint:", error);
-                if (error instanceof Error) {
-                    this.addMessage("Fatal error: Could not initiate session creation. " + error.message, "error-message");
-                } else {
-                    this.addMessage("Fatal error: Could not initiate session creation. Check console.", "error-message");
-                }
+            // Vérifier s'il y a des sessions disponibles
+            if (this._userSessions && this._userSessions.length > 0) {
+                // Il y a des sessions disponibles, mais aucune n'est sélectionnée
+                // On affiche le message de bienvenue et on laisse l'utilisateur choisir
+                console.log("Sessions available but no session selected. Showing welcome message.");
+                this._showWelcomeMessage = true;
+                this.clearMessages();
+                this.setConnected(false);
+            } else {
+                // Aucune session disponible, afficher le message de bienvenue
+                console.log("No sessions available. Showing welcome message.");
+                this._showWelcomeMessage = true;
+                this.clearMessages();
+                this.setConnected(false);
             }
         }
     }
@@ -418,8 +409,14 @@ class ChatState {
             }
             const data = await response.json();
             if (data.sessions) {
-                this._userSessions = data.sessions.sort((a, b) => b.last_update_time - a.last_update_time);
-                console.log("User sessions loaded:", this._userSessions);
+                // Tri des sessions par last_update_time, du plus récent au plus ancien
+                // S'assurer que last_update_time est bien un nombre pour le tri
+                this._userSessions = data.sessions.sort((/** @type {UserSession} */ a, /** @type {UserSession} */ b) => {
+                    const timeA = a.last_update_time || 0;
+                    const timeB = b.last_update_time || 0;
+                    return timeB - timeA;
+                });
+                console.log("User sessions loaded and sorted:", this._userSessions);
             }
         } catch (error) {
             console.error("Error loading user sessions:", error);
@@ -440,6 +437,8 @@ class ChatState {
         this.addMessage("Creating new session...", "system-message");
 
         this._isSwitchingSession = true; // Indiquer un changement manuel
+        this._showWelcomeMessage = false; // Masquer le message de bienvenue
+
         if (this._ws && this._ws.readyState === WebSocket.OPEN) {
             this._ws.close();
         }
@@ -448,10 +447,58 @@ class ChatState {
         removeCookie("chat_session_id");
         this.setCurrentSessionId(null);
 
-        // La création de session se fait via initializeSessionAndConnect si aucun cookie n'est trouvé
-        // Elle mettra à jour l'UI et la liste des sessions une fois terminée
-        await this.initializeSessionAndConnect(null, false); // false car ce n'est pas une reconnexion auto
-        // isSwitchingSession sera remis à false par onopen ou onerror de la nouvelle connexion WebSocket
+        // Créer une nouvelle session via WebSocket
+        try {
+            const createSessionWsUrl = `${PUBLIC_FAST_API_WS_URL}/ws/create_session/${userId}`;
+            const sessionWs = new WebSocket(createSessionWsUrl);
+
+            sessionWs.onopen = () => {
+                console.log("Connected to create_session endpoint.");
+            };
+
+            sessionWs.onmessage = async (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === "session_created" && data.session_id) {
+                    const sessionId = data.session_id;
+                    if (sessionId) {
+                        setCookie("chat_session_id", sessionId);
+                    }
+                    this.setCurrentSessionId(sessionId);
+                    console.log("New session ID received and stored:", sessionId);
+                    this.addMessage("Session created: " + sessionId, "system-message");
+                    sessionWs.close();
+                    if (sessionId) {
+                        // Lancer le chargement de l'historique après avoir obtenu un nouveau session_id
+                        this.clearMessages(); // Vider les messages précédents
+                        this.addMessage("New session created: " + sessionId, "system-message");
+                        await this.loadChatHistory(userId, sessionId);
+                        this.connectToChatWebSocket(userId, sessionId);
+                        await this.loadUserSessions(userId); // Recharger la liste des sessions
+                    }
+                } else {
+                    console.error("Failed to create session:", data);
+                    this.addMessage("Error: Could not create session. " + (data.message || ""), "error-message");
+                }
+            };
+
+            sessionWs.onerror = (error) => {
+                console.error("WebSocket error during session creation:", error);
+                this.addMessage("Error: Could not connect to create session. Check console.", "error-message");
+                this.setConnected(false);
+            };
+
+            sessionWs.onclose = () => {
+                console.log("Session creation WebSocket closed.");
+            };
+
+        } catch (error) {
+            console.error("Failed to connect to session creation endpoint:", error);
+            if (error instanceof Error) {
+                this.addMessage("Fatal error: Could not initiate session creation. " + error.message, "error-message");
+            } else {
+                this.addMessage("Fatal error: Could not initiate session creation. Check console.", "error-message");
+            }
+        }
     }
 
     /**
@@ -480,6 +527,71 @@ class ChatState {
         this.connectToChatWebSocket(userId, newSessionId);
         // Pas besoin de recharger les sessions utilisateur ici car la liste ne change pas, juste la session active
         // isSwitchingSession sera remis à false par onopen ou onerror de la nouvelle connexion WebSocket
+    }
+
+    /**
+     * Supprime une session pour l'utilisateur actuel.
+     * @param {string} userId - L'ID de l'utilisateur.
+     * @param {string} sessionIdToDelete - L'ID de la session à supprimer.
+     */
+    async deleteSession(userId, sessionIdToDelete) {
+        console.log(`Attempting to delete session ${sessionIdToDelete} for user ${userId}`);
+        this.addMessage(`Deleting session ${sessionIdToDelete.substring(0, 8)}...`, "system-message");
+
+        try {
+            const httpBaseUrl = PUBLIC_FAST_API_URL;
+            const deleteUrl = `${httpBaseUrl}/sessions/${userId}/${sessionIdToDelete}`;
+            const response = await fetch(deleteUrl, { method: 'DELETE' });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ detail: "Failed to delete session, server returned: " + response.status }));
+                throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+            }
+
+            const result = await response.json();
+            this.addMessage(result.message || `Session ${sessionIdToDelete.substring(0, 8)} deleted.`, "system-message");
+
+            // Mettre à jour l'état local
+            const oldSessions = [...this._userSessions];
+            const deletedSessionIndex = oldSessions.findIndex(session => session.session_id === sessionIdToDelete);
+            this._userSessions = this._userSessions.filter(session => session.session_id !== sessionIdToDelete);
+
+            if (this._currentSessionId === sessionIdToDelete) {
+                if (this._ws && this._ws.readyState === WebSocket.OPEN) {
+                    this._isSwitchingSession = true; // Pour éviter la reconnexion auto pendant la fermeture
+                    this._ws.close();
+                }
+                this.clearMessages();
+                removeCookie("chat_session_id");
+                this.setCurrentSessionId(null);
+                this.setConnected(false);
+
+                if (this._userSessions.length > 0) {
+                    // S'il reste des sessions, sélectionner la suivante ou la précédente si la dernière a été supprimée
+                    let nextSessionIndex = deletedSessionIndex;
+                    if (nextSessionIndex >= this._userSessions.length) { // Si la dernière a été supprimée
+                        nextSessionIndex = this._userSessions.length - 1;
+                    }
+                    this.addMessage("Current session deleted. Switching to another session...", "system-message");
+                    // Délai pour s'assurer que l'état du WS est bien géré avant de switcher
+                    setTimeout(async () => {
+                        await this.switchSession(userId, this._userSessions[nextSessionIndex].session_id);
+                    }, 100);
+                } else {
+                    this.addMessage("Current session deleted. No other sessions available. Please create a new session.", "system-message");
+                    // Optionnel: initier la création d'une nouvelle session s'il n'en reste plus
+                    // setTimeout(async () => { await this.createNewSession(userId); }, 100);
+                }
+            }
+
+        } catch (error) {
+            console.error("Error deleting session:", error);
+            if (error instanceof Error) {
+                this.addMessage("Error deleting session: " + error.message, "error-message");
+            } else {
+                this.addMessage("An unknown error occurred while deleting the session.", "error-message");
+            }
+        }
     }
 }
 
@@ -553,6 +665,15 @@ export async function switchSession(userId, newSessionId) {
     await chatState.switchSession(userId, newSessionId);
 }
 
+/**
+ * Supprime la session spécifiée pour l'utilisateur.
+ * @param {string} userId - L'ID de l'utilisateur.
+ * @param {string} sessionId - L'ID de la session à supprimer.
+ */
+export async function deleteSelectedSession(userId, sessionId) {
+    await chatState.deleteSession(userId, sessionId);
+}
+
 export function getMessages() {
     return chatState.messages;
 }
@@ -567,6 +688,9 @@ export function getIsThinking() {
 }
 export function getUserSessions() {
     return chatState.userSessions;
+}
+export function getShowWelcomeMessage() {
+    return chatState.showWelcomeMessage;
 }
 
 // Fonction utilitaire pour supprimer un cookie
