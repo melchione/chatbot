@@ -11,12 +11,68 @@
         gfm: true, // Support GitHub Flavored Markdown
     });
 
-    // Fonction pour parser le markdown
-    function parseMarkdown(text) {
+    // Fonction pour parser le markdown et ajouter les classes Tailwind
+    function parseMarkdown(/** @type {string} */ text) {
         try {
-            const result = marked.parse(text);
-            // marked.parse peut retourner une string ou une Promise<string>
+            let result = marked.parse(text);
+
+            // Vérifier si c'est une string ou une Promise
             if (typeof result === "string") {
+                // Post-traiter le HTML pour ajouter les classes Tailwind
+                result = result
+                    // Titres
+                    .replace(
+                        /<h1>/g,
+                        '<h1 class="text-4xl font-extralight my-4">',
+                    )
+                    .replace(/<h2>/g, '<h2 class="text-2xl font-light my-3">')
+                    .replace(/<h3>/g, '<h3 class="text-lg  my-2">')
+                    .replace(/<h4>/g, '<h4 class="text-base  my-2">')
+                    .replace(/<h5>/g, '<h5 class="text-sm  my-1">')
+                    .replace(/<h6>/g, '<h6 class="text-xs  my-1">')
+                    // Paragraphes
+                    .replace(/<p>/g, '<p class="my-2">')
+                    // Listes
+                    .replace(/<ul>/g, '<ul class="my-2 pl-6 list-disc">')
+                    .replace(/<ol>/g, '<ol class="my-2 pl-6 list-decimal">')
+                    .replace(/<li>/g, '<li class="my-1">')
+                    // Code inline et blocks
+                    .replace(
+                        /<code>/g,
+                        '<code class="bg-gray-100 px-1 py-0.5 rounded text-sm font-mono break-all">',
+                    )
+                    .replace(
+                        /<pre>/g,
+                        '<pre class="bg-gray-100 p-4 rounded-lg overflow-x-auto my-3 w-full">',
+                    )
+                    // Citations
+                    .replace(
+                        /<blockquote>/g,
+                        '<blockquote class="border-l-4 border-gray-400 pl-4 italic my-3 text-gray-600">',
+                    )
+                    // Liens
+                    .replace(
+                        /<a /g,
+                        '<a class="text-blue-600 underline hover:no-underline break-all" ',
+                    )
+                    // Texte en gras et italique
+                    .replace(/<strong>/g, '<strong class="font-bold">')
+                    .replace(/<em>/g, '<em class="italic">')
+                    // Tables (envelopper dans un conteneur scrollable complètement isolé)
+                    .replace(
+                        /<table>/g,
+                        '<div class="w-full"><div class="overflow-x-auto max-w-[70vw] my-3"><table class="border-collapse border border-gray-300 w-max">',
+                    )
+                    .replace(/<\/table>/g, "</table></div></div>")
+                    .replace(
+                        /<th>/g,
+                        '<th class="border border-gray-300 p-2 bg-gray-100 font-bold text-left whitespace-nowrap">',
+                    )
+                    .replace(
+                        /<td>/g,
+                        '<td class="border border-gray-300 p-2 whitespace-nowrap">',
+                    );
+
                 return result;
             } else {
                 // Si c'est une Promise, on retourne le texte original pour éviter les erreurs
@@ -96,8 +152,15 @@
         }
     }
 
+    // Scroll automatique quand les messages changent ou quand l'état thinking change
     $effect(() => {
-        scrollToBottom();
+        chatState.messages; // Réagir aux changements de messages
+        chatState.isThinking; // Réagir aux changements d'état thinking
+
+        // Petite temporisation pour laisser le DOM se mettre à jour
+        setTimeout(() => {
+            scrollToBottom();
+        }, 10);
     });
 
     function handleScroll() {
@@ -186,7 +249,7 @@
 
 <div class="w-full">
     <div
-        class="font-sans relative m-5 mb-0 flex flex-col h-[calc(100vh-118px)] max-w-2xl mx-auto"
+        class="font-sans relative m-5 mb-0 flex flex-col h-[calc(100vh-118px)] max-w-full px-10 mx-auto"
     >
         <div
             class="absolute inset-0 bg-white/50 backdrop-blur-xl z-[-1] rounded-2xl"
@@ -199,7 +262,7 @@
         </h1>
         <div
             bind:this={messagesArea}
-            class="flex-grow overflow-y-auto p-4 mx-4 mb-4"
+            class="flex-grow overflow-y-auto overflow-x-hidden p-4 mx-4 mb-4"
             onscroll={handleScroll}
         >
             {#if chatState.showWelcomeMessage}
@@ -237,9 +300,9 @@
                     <div
                         class="chat_message mb-2.5 p-2.5 rounded-2xl break-words leading-normal flex flex-col {message.type ===
                             'user-message' || message.type === 'user-image'
-                            ? 'bg-blue-600 text-white max-w-[75%]  ml-auto rounded-br-md'
+                            ? 'bg-blue-600 text-white w-fit max-w-[80vw] overflow-x-auto ml-auto rounded-br-md'
                             : ''} {message.type === 'agent-message'
-                            ? 'bg-white text-gray-800 max-w-[75%]  mr-auto rounded-bl-md'
+                            ? 'bg-white text-gray-800 w-fit max-w-[80vw] overflow-x-auto mr-auto rounded-bl-md'
                             : ''} {message.type === 'system-message'
                             ? 'italic text-gray-500 text-center text-sm py-1'
                             : ''} {message.type === 'error-message'
@@ -261,6 +324,15 @@
                         {/if}
                     </div>
                 {/each}
+
+                <!-- Animation de thinking quand l'agent réfléchit -->
+                {#if chatState.isThinking && !chatState.showWelcomeMessage}
+                    <div class="thinking-dots mx-auto text-white w-fit mb-4">
+                        <span class="dot"></span>
+                        <span class="dot"></span>
+                        <span class="dot"></span>
+                    </div>
+                {/if}
             {/if}
         </div>
 
@@ -321,107 +393,3 @@
         </form>
     </div>
 </div>
-
-<style>
-    /* Styles pour le contenu Markdown dans les messages d'agent */
-    :global(.chat_message h1),
-    :global(.chat_message h2),
-    :global(.chat_message h3),
-    :global(.chat_message h4),
-    :global(.chat_message h5),
-    :global(.chat_message h6) {
-        font-weight: bold;
-        margin: 0.5em 0 0.3em 0;
-        line-height: 1.2;
-        color: inherit;
-    }
-
-    :global(.chat_message h1) {
-        font-size: 1.5em;
-    }
-    :global(.chat_message h2) {
-        font-size: 1.3em;
-    }
-    :global(.chat_message h3) {
-        font-size: 1.1em;
-    }
-
-    :global(.chat_message p) {
-        margin: 0.5em 0;
-    }
-
-    :global(.chat_message ul),
-    :global(.chat_message ol) {
-        margin: 0.5em 0;
-        padding-left: 1.5em;
-    }
-
-    :global(.chat_message li) {
-        margin: 0.2em 0;
-        list-style-type: disc;
-    }
-
-    :global(.chat_message code) {
-        background-color: rgba(0, 0, 0, 0.1);
-        padding: 0.2em 0.4em;
-        border-radius: 0.25em;
-        font-family: "Courier New", Courier, monospace;
-        font-size: 0.9em;
-    }
-
-    :global(.chat_message pre) {
-        background-color: rgba(0, 0, 0, 0.1);
-        padding: 1em;
-        border-radius: 0.5em;
-        overflow-x: auto;
-        margin: 0.5em 0;
-    }
-
-    :global(.chat_message pre code) {
-        background-color: transparent;
-        padding: 0;
-    }
-
-    :global(.chat_message blockquote) {
-        border-left: 3px solid #666;
-        margin: 0.5em 0;
-        padding-left: 1em;
-        font-style: italic;
-        color: #555;
-    }
-
-    :global(.chat_message table) {
-        border-collapse: collapse;
-        margin: 0.5em 0;
-        width: 100%;
-    }
-
-    :global(.chat_message th),
-    :global(.chat_message td) {
-        border: 1px solid #999;
-        padding: 0.5em;
-        text-align: left;
-    }
-
-    :global(.chat_message th) {
-        background-color: rgba(0, 0, 0, 0.1);
-        font-weight: bold;
-    }
-
-    :global(.chat_message strong) {
-        font-weight: bold;
-    }
-
-    :global(.chat_message em) {
-        font-style: italic;
-    }
-
-    :global(.chat_message a) {
-        color: #0066cc;
-        text-decoration: underline;
-    }
-
-    :global(.chat_message a:hover) {
-        text-decoration: none;
-    }
-</style>
