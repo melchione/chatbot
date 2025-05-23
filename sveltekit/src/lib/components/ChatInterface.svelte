@@ -304,7 +304,7 @@
                             : ''} {message.type === 'agent-message'
                             ? 'bg-white text-gray-800 w-fit max-w-[80vw] overflow-x-auto mr-auto rounded-bl-md'
                             : ''} {message.type === 'system-message'
-                            ? 'italic text-gray-500 text-center text-sm py-1'
+                            ? 'italic text-white text-center text-sm py-1'
                             : ''} {message.type === 'error-message'
                             ? 'bg-red-100 text-red-700 border border-red-300 font-bold rounded-md'
                             : ''}"

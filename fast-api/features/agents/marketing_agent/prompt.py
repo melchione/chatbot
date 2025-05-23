@@ -1,3 +1,4 @@
+from datetime import datetime
 from features.agents.prompt import get_agency_flow_instruction
 
 
@@ -9,6 +10,7 @@ def get_description():
 
 def get_instruction():
     return f"""
+    DATE DU JOUR : {datetime.now().strftime("%d/%m/%Y")}
 
     {get_agency_flow_instruction()}
 
