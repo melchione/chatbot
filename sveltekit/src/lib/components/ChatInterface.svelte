@@ -693,7 +693,57 @@
 
     // Fonctions TTS (Text-to-Speech)
     /**
-     * Lit le message de l'agent avec synthèse vocale
+     * Découpe le texte en segments intelligents pour la synthèse vocale
+     * @param {string} text - Le texte à découper
+     * @param {number} maxLength - Longueur maximale par segment
+     * @returns {string[]} - Tableau des segments
+     */
+    function splitTextIntoSegments(text, maxLength = 200) {
+        const segments = [];
+        let currentSegment = "";
+
+        // Découper d'abord par phrases (points, points d'exclamation, points d'interrogation)
+        const sentences = text.split(/(?<=[.!?])\s+/);
+
+        for (const sentence of sentences) {
+            // Si la phrase seule dépasse la limite, la découper par virgules
+            if (sentence.length > maxLength) {
+                const parts = sentence.split(/(?<=,)\s+/);
+                for (const part of parts) {
+                    if (
+                        currentSegment.length + part.length > maxLength &&
+                        currentSegment.length > 0
+                    ) {
+                        segments.push(currentSegment.trim());
+                        currentSegment = part;
+                    } else {
+                        currentSegment += (currentSegment ? " " : "") + part;
+                    }
+                }
+            } else {
+                // Si ajouter cette phrase dépasse la limite, finaliser le segment actuel
+                if (
+                    currentSegment.length + sentence.length > maxLength &&
+                    currentSegment.length > 0
+                ) {
+                    segments.push(currentSegment.trim());
+                    currentSegment = sentence;
+                } else {
+                    currentSegment += (currentSegment ? " " : "") + sentence;
+                }
+            }
+        }
+
+        // Ajouter le dernier segment s'il n'est pas vide
+        if (currentSegment.trim()) {
+            segments.push(currentSegment.trim());
+        }
+
+        return segments.filter((segment) => segment.length > 0);
+    }
+
+    /**
+     * Lit le message de l'agent avec synthèse vocale en segments
      * @param {string} messageId - L'ID du message à lire
      * @param {string} messageText - Le texte du message à lire
      */
@@ -714,50 +764,19 @@
             isLoadingTTS = true;
             currentlyPlayingMessageId = messageId;
 
-            // Envoyer le texte à l'API TTS
-            const httpBaseUrl = PUBLIC_FAST_API_URL;
-            const response = await fetch(`${httpBaseUrl}/tts`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({ text: messageText }),
-            });
+            // Découper le texte en segments
+            const segments = splitTextIntoSegments(messageText);
+            console.log(
+                `[TTS] Message découpé en ${segments.length} segments:`,
+                segments,
+            );
 
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+            if (segments.length === 0) {
+                throw new Error("Aucun segment de texte à synthétiser");
             }
 
-            // Récupérer l'audio en tant que blob
-            const audioBlob = await response.blob();
-            const audioUrl = URL.createObjectURL(audioBlob);
-
-            // Créer et configurer l'audio player
-            audioPlayer = new Audio(audioUrl);
-
-            audioPlayer.onloadstart = () => {
-                isLoadingTTS = true;
-            };
-
-            audioPlayer.oncanplay = () => {
-                isLoadingTTS = false;
-            };
-
-            audioPlayer.onended = () => {
-                currentlyPlayingMessageId = null;
-                isLoadingTTS = false;
-                URL.revokeObjectURL(audioUrl);
-            };
-
-            audioPlayer.onerror = () => {
-                console.error("Erreur lors de la lecture audio");
-                currentlyPlayingMessageId = null;
-                isLoadingTTS = false;
-                URL.revokeObjectURL(audioUrl);
-            };
-
-            // Démarrer la lecture
-            await audioPlayer.play();
+            // Démarrer la synthèse et lecture en streaming
+            await playSegmentsSequentially(segments, messageId);
         } catch (error) {
             console.error("Erreur TTS:", error);
             const errorMessage =
@@ -768,6 +787,129 @@
             );
             currentlyPlayingMessageId = null;
             isLoadingTTS = false;
+        }
+    }
+
+    /**
+     * Joue les segments de manière séquentielle avec préparation en arrière-plan
+     * @param {string[]} segments - Les segments à jouer
+     * @param {string} messageId - L'ID du message original
+     */
+    async function playSegmentsSequentially(segments, messageId) {
+        const httpBaseUrl = PUBLIC_FAST_API_URL;
+        /** @type {Array<{audioUrl: string, index: number}>} */
+        let audioQueue = [];
+        let currentIndex = 0;
+        let isPlaying = false;
+
+        // Fonction pour synthétiser un segment
+        /**
+         * @param {string} text
+         * @param {number} index
+         */
+        async function synthesizeSegment(text, index) {
+            console.log(
+                `[TTS] Synthèse segment ${index + 1}/${segments.length}: "${text.substring(0, 50)}..."`,
+            );
+
+            const response = await fetch(`${httpBaseUrl}/tts`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ text }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const audioBlob = await response.blob();
+            const audioUrl = URL.createObjectURL(audioBlob);
+
+            console.log(`[TTS] Segment ${index + 1} synthétisé avec succès`);
+            return { audioUrl, index };
+        }
+
+        // Fonction pour jouer le prochain segment dans la queue
+        async function playNextSegment() {
+            if (currentlyPlayingMessageId !== messageId) {
+                console.log("[TTS] Lecture arrêtée par l'utilisateur");
+                return;
+            }
+
+            if (currentIndex < audioQueue.length) {
+                const { audioUrl } = audioQueue[currentIndex];
+
+                audioPlayer = new Audio(audioUrl);
+
+                audioPlayer.oncanplay = () => {
+                    if (currentIndex === 0) {
+                        isLoadingTTS = false; // Premier segment prêt
+                    }
+                };
+
+                audioPlayer.onended = async () => {
+                    URL.revokeObjectURL(audioUrl);
+                    currentIndex++;
+
+                    if (currentIndex < segments.length) {
+                        // Il y a encore des segments à jouer
+                        await playNextSegment();
+                    } else {
+                        // Fin de tous les segments
+                        console.log(
+                            "[TTS] Lecture de tous les segments terminée",
+                        );
+                        currentlyPlayingMessageId = null;
+                        isLoadingTTS = false;
+                    }
+                };
+
+                audioPlayer.onerror = () => {
+                    console.error("Erreur lors de la lecture du segment");
+                    URL.revokeObjectURL(audioUrl);
+                    currentlyPlayingMessageId = null;
+                    isLoadingTTS = false;
+                };
+
+                await audioPlayer.play();
+                console.log(
+                    `[TTS] Lecture du segment ${currentIndex + 1}/${segments.length} démarrée`,
+                );
+            }
+        }
+
+        // Synthétiser et jouer les segments
+        try {
+            // Lancer la synthèse du premier segment immédiatement
+            const firstSegmentPromise = synthesizeSegment(segments[0], 0);
+
+            // Lancer les autres synthèses en parallèle
+            const otherSegmentsPromises = segments
+                .slice(1)
+                .map((segment, index) => synthesizeSegment(segment, index + 1));
+
+            // Attendre le premier segment et le jouer immédiatement
+            const firstSegment = await firstSegmentPromise;
+            audioQueue[0] = firstSegment;
+            await playNextSegment();
+
+            // Attendre les autres segments et les ajouter à la queue dans l'ordre
+            if (otherSegmentsPromises.length > 0) {
+                const otherSegments = await Promise.all(otherSegmentsPromises);
+                otherSegments.forEach((segment) => {
+                    audioQueue[segment.index] = segment;
+                });
+                console.log(
+                    `[TTS] Tous les ${segments.length} segments synthétisés`,
+                );
+            }
+        } catch (error) {
+            console.error("Erreur lors de la synthèse des segments:", error);
+            currentlyPlayingMessageId = null;
+            isLoadingTTS = false;
+            throw error;
         }
     }
 
