@@ -50,6 +50,7 @@ services:
       AGENT_RESOURCE_ID: ${AGENT_RESOURCE_ID}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
     networks:
       - chatbot_default
 

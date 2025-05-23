@@ -521,7 +521,7 @@ async def text_to_speech(request: TTSRequest):
         logger.info(f"TTS request received for text length: {len(request.text)}")
 
         # Générer l'audio à partir du texte
-        audio_bytes = text_to_audio_bytes(request.text)
+        audio_bytes = await text_to_audio_bytes(request.text)
 
         logger.info(f"TTS audio generated successfully, size: {len(audio_bytes)} bytes")
 
