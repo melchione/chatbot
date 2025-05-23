@@ -37,6 +37,13 @@ class ChatState {
     _isSwitchingSession = $state(false); // Pour éviter la reconnexion auto pendant un switch manuel
     _showWelcomeMessage = $state(false); // Pour afficher le message de bienvenue
     _messageIdCounter = 0; // Compteur pour générer des IDs uniques
+    _autoTTSPlaying = $state(false);
+    /** @type {Array<{audioUrl: string, index: number, text: string}>} */
+    _autoTTSQueue = $state([]);
+    _autoTTSCurrentIndex = $state(0);
+    _autoTTSIsPlayingStarted = $state(false);
+    /** @type {HTMLAudioElement | null} */
+    _autoTTSPlayer = null;
 
     constructor() {
         // Initialisation si nécessaire, ou laisser vide si $state gère l'initialisation
@@ -274,6 +281,26 @@ class ChatState {
                 // Afficher la transcription comme un message utilisateur
                 const transcriptionId = `transcription_${this._generateUniqueId()}`;
                 this.addMessage(data.text, "user-message", transcriptionId);
+            } else if (data.type === "tts_start") {
+                // Signal du début du streaming TTS automatique
+                console.log(`[Auto TTS] Début streaming TTS: ${data.total_segments} segments`);
+                this._autoTTSPlaying = true;
+                this._autoTTSQueue = [];
+                this._autoTTSCurrentIndex = 0;
+                this._autoTTSIsPlayingStarted = false;
+            } else if (data.type === "tts_segment") {
+                // Réception d'un segment TTS automatique
+                console.log(`[Auto TTS] Segment ${data.index + 1}/${data.total_segments} reçu`);
+                this.handleAutoTTSSegment(data);
+            } else if (data.type === "tts_end") {
+                // Fin du streaming TTS automatique
+                console.log("[Auto TTS] Streaming TTS terminé");
+                // Pas besoin d'action spéciale, la lecture continue jusqu'au dernier segment
+            } else if (data.type === "tts_error") {
+                // Erreur TTS automatique
+                console.error("[Auto TTS] Erreur:", data.message);
+                this._autoTTSPlaying = false;
+                this.addMessage("Erreur TTS: " + data.message, "error-message");
             } else if (data.type === "error" && data.message) {
                 const errorId = data.id || `error_${this._generateUniqueId()}`;
                 this.addMessage("Error: " + data.message, "error-message", errorId);
@@ -615,6 +642,118 @@ class ChatState {
                 this.addMessage("An unknown error occurred while deleting the session.", "error-message");
             }
         }
+    }
+
+    /**
+     * Gère la réception d'un segment TTS automatique
+     * @param {Object} data - Les données du segment TTS
+     * @param {number} data.index - Index du segment
+     * @param {number} data.total_segments - Nombre total de segments
+     * @param {string} data.text - Texte du segment
+     * @param {string} data.audio_data - Données audio en base64
+     * @param {boolean} data.is_final - Si c'est le dernier segment
+     */
+    async handleAutoTTSSegment(data) {
+        try {
+            console.log(`[Auto TTS] Traitement segment ${data.index + 1}/${data.total_segments}: "${data.text.substring(0, 30)}..."`);
+
+            // Décoder l'audio et créer l'URL
+            const audioBytes = Uint8Array.from(atob(data.audio_data), c => c.charCodeAt(0));
+            const audioBlob = new Blob([audioBytes], { type: 'audio/mpeg' });
+            const audioUrl = URL.createObjectURL(audioBlob);
+
+            // Ajouter à la queue
+            this._autoTTSQueue[data.index] = {
+                audioUrl,
+                index: data.index,
+                text: data.text
+            };
+
+            // Démarrer la lecture du premier segment dès qu'il arrive
+            if (data.index === 0 && !this._autoTTSIsPlayingStarted) {
+                this._autoTTSIsPlayingStarted = true;
+                await this.playNextAutoTTSSegment();
+            }
+
+        } catch (error) {
+            console.error("[Auto TTS] Erreur traitement segment:", error);
+            this._autoTTSPlaying = false;
+        }
+    }
+
+    /**
+     * Joue le prochain segment TTS automatique dans la queue
+     */
+    async playNextAutoTTSSegment() {
+        if (!this._autoTTSPlaying) {
+            console.log("[Auto TTS] Lecture arrêtée");
+            return;
+        }
+
+        if (this._autoTTSCurrentIndex < this._autoTTSQueue.length &&
+            this._autoTTSQueue[this._autoTTSCurrentIndex]) {
+
+            const { audioUrl, text } = this._autoTTSQueue[this._autoTTSCurrentIndex];
+            console.log(`[Auto TTS] Lecture segment ${this._autoTTSCurrentIndex + 1}: "${text.substring(0, 30)}..."`);
+
+            this._autoTTSPlayer = new Audio(audioUrl);
+
+            this._autoTTSPlayer.onended = async () => {
+                URL.revokeObjectURL(audioUrl);
+                this._autoTTSCurrentIndex++;
+                await this.playNextAutoTTSSegment();
+            };
+
+            this._autoTTSPlayer.onerror = () => {
+                console.error("[Auto TTS] Erreur lecture segment");
+                URL.revokeObjectURL(audioUrl);
+                this._autoTTSPlaying = false;
+            };
+
+            try {
+                await this._autoTTSPlayer.play();
+            } catch (playError) {
+                console.error("[Auto TTS] Erreur démarrage lecture:", playError);
+                this._autoTTSPlaying = false;
+            }
+        } else {
+            // Plus de segments à jouer
+            console.log("[Auto TTS] Lecture automatique terminée");
+            this._autoTTSPlaying = false;
+            this._autoTTSIsPlayingStarted = false;
+            this._autoTTSCurrentIndex = 0;
+            this._autoTTSQueue = [];
+        }
+    }
+
+    /**
+     * Arrête la lecture TTS automatique
+     */
+    stopAutoTTS() {
+        if (this._autoTTSPlayer && !this._autoTTSPlayer.paused) {
+            this._autoTTSPlayer.pause();
+            this._autoTTSPlayer.currentTime = 0;
+        }
+
+        // Nettoyer les URLs des blobs
+        this._autoTTSQueue.forEach(segment => {
+            if (segment && segment.audioUrl) {
+                URL.revokeObjectURL(segment.audioUrl);
+            }
+        });
+
+        this._autoTTSPlaying = false;
+        this._autoTTSIsPlayingStarted = false;
+        this._autoTTSCurrentIndex = 0;
+        this._autoTTSQueue = [];
+        this._autoTTSPlayer = null;
+
+        console.log("[Auto TTS] Lecture arrêtée manuellement");
+    }
+
+    // Getter pour exposer l'état de lecture TTS automatique
+    get isAutoTTSPlaying() {
+        return this._autoTTSPlaying;
     }
 }
 

@@ -159,6 +159,9 @@ async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_i
             user_content: Optional[genai.types.Content] = None
             parts_for_content = []
 
+            # Tracker si le message original vient d'un audio pour déclencher le TTS automatique
+            is_audio_message = message_type == "audio"
+
             if message_type == "text":
                 if isinstance(message_data, str):
                     parts_for_content.append(genai.types.Part(text=message_data))
@@ -309,7 +312,10 @@ async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_i
                 f"Sending to ADK agent for client {client_id} (session {session_id}): {str(user_content)}"
             )
 
+            # Variables pour collecter la réponse complète de l'agent
+            agent_response_text = ""
             event_received_count = 0
+
             async for event in agent_runner.run_async(
                 user_id=client_id,
                 session_id=session_id,
@@ -324,6 +330,7 @@ async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_i
                 text_content = None
                 if event.is_final_response() and event.content and event.content.parts:
                     text_content = event.content.parts[0].text
+                    agent_response_text += text_content  # Collecter pour le TTS
                     logger.info(
                         f"ADK Agent FINAL response for {client_id}: {text_content}"
                     )
@@ -337,6 +344,9 @@ async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_i
                     # Pour l'instant, on suppose que les parties de contenu intermédiaires ont aussi du texte
                     intermediate_text = event.content.parts[0].text
                     if intermediate_text:
+                        agent_response_text += (
+                            intermediate_text  # Collecter pour le TTS
+                        )
                         logger.info(
                             f"ADK Agent INTERMEDIATE response for {client_id}: {intermediate_text}"
                         )
@@ -355,6 +365,22 @@ async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_i
 
             await websocket.send_json({"type": "message_end"})
             logger.info(f"Finished streaming ADK agent response to client {client_id}")
+
+            # Si le message original était audio et qu'on a une réponse de l'agent, déclencher TTS automatique
+            if is_audio_message and agent_response_text.strip():
+                logger.info(
+                    f"Auto-triggering TTS for audio message response: {agent_response_text[:50]}..."
+                )
+                try:
+                    await send_tts_stream_via_websocket(websocket, agent_response_text)
+                except Exception as tts_error:
+                    logger.error(f"Error during auto TTS: {tts_error}", exc_info=True)
+                    await websocket.send_json(
+                        {
+                            "type": "tts_error",
+                            "message": f"Erreur lors de la synthèse vocale automatique: {str(tts_error)}",
+                        }
+                    )
 
     except WebSocketDisconnect:
         logger.info(f"ADK WebSocket client {client_id} disconnected.")
@@ -378,6 +404,77 @@ async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_i
         logger.info(f"Closing ADK WebSocket connection for client {client_id}.")
         with suppress(Exception):  # Safely attempt to closewx
             await websocket.close()
+
+
+async def send_tts_stream_via_websocket(websocket: WebSocket, text: str):
+    """
+    Envoie les segments TTS via WebSocket en streaming.
+    """
+    logger.info(f"Starting TTS streaming via WebSocket for text length: {len(text)}")
+
+    try:
+        # Traiter le texte et générer les segments
+        segments = await process_text_and_generate_segments(text)
+        logger.info(f"Text divided into {len(segments)} segments for WebSocket TTS")
+
+        if not segments:
+            await websocket.send_json(
+                {
+                    "type": "tts_error",
+                    "message": "No valid segments generated from text",
+                }
+            )
+            return
+
+        # Signaler le début du streaming TTS
+        await websocket.send_json(
+            {"type": "tts_start", "total_segments": len(segments)}
+        )
+
+        # Générer et envoyer chaque segment
+        for i, segment in enumerate(segments):
+            try:
+                logger.info(
+                    f"Generating TTS segment {i+1}/{len(segments)}: {segment[:50]}..."
+                )
+
+                # Générer l'audio pour ce segment
+                audio_bytes = await generate_audio_for_segment(segment)
+
+                # Envoyer le segment via WebSocket
+                segment_data = {
+                    "type": "tts_segment",
+                    "index": i,
+                    "total_segments": len(segments),
+                    "text": segment,
+                    "audio_data": base64.b64encode(audio_bytes).decode("utf-8"),
+                    "is_final": i == len(segments) - 1,
+                }
+
+                await websocket.send_json(segment_data)
+                logger.info(f"TTS segment {i+1}/{len(segments)} sent via WebSocket")
+
+            except Exception as e:
+                logger.error(f"Error generating TTS segment {i+1}: {e}")
+                await websocket.send_json(
+                    {
+                        "type": "tts_error",
+                        "message": f"Error generating segment {i+1}: {str(e)}",
+                        "index": i,
+                        "total_segments": len(segments),
+                    }
+                )
+
+        # Signaler la fin du streaming TTS
+        await websocket.send_json({"type": "tts_end"})
+
+        logger.info("TTS streaming completed via WebSocket")
+
+    except Exception as e:
+        logger.error(f"Error during TTS streaming via WebSocket: {e}", exc_info=True)
+        await websocket.send_json(
+            {"type": "tts_error", "message": f"Error during TTS streaming: {str(e)}"}
+        )
 
 
 @app.delete("/sessions/{user_id}/{session_id}")

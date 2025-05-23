@@ -1024,6 +1024,27 @@
                         <span class="dot"></span>
                     </div>
                 {/if}
+
+                <!-- Indicateur de lecture TTS automatique -->
+                {#if chatState.isAutoTTSPlaying}
+                    <div
+                        class="flex items-center justify-center gap-3 bg-blue-500/20 text-white px-4 py-2 rounded-lg mx-4 mb-4"
+                    >
+                        <div class="flex items-center gap-2">
+                            <span class="text-lg animate-pulse">🔊</span>
+                            <span class="text-sm"
+                                >Lecture audio en cours...</span
+                            >
+                        </div>
+                        <button
+                            onclick={() => chatState.stopAutoTTS()}
+                            class="bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded text-xs transition-colors"
+                            title="Arrêter la lecture audio"
+                        >
+                            Arrêter
+                        </button>
+                    </div>
+                {/if}
             {/if}
         </div>
 
