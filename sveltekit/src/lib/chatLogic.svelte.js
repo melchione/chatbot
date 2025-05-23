@@ -270,6 +270,10 @@ class ChatState {
                 this.updateLastMessagePart(data.text);
             } else if (data.type === "message_end") {
                 this.completeLastMessage();
+            } else if (data.type === "transcription" && data.text) {
+                // Afficher la transcription comme un message utilisateur
+                const transcriptionId = `transcription_${this._generateUniqueId()}`;
+                this.addMessage(data.text, "user-message", transcriptionId);
             } else if (data.type === "error" && data.message) {
                 const errorId = data.id || `error_${this._generateUniqueId()}`;
                 this.addMessage("Error: " + data.message, "error-message", errorId);
@@ -391,6 +395,25 @@ class ChatState {
             this.addMessage(prompt, "user-image", null, `data:${mimeType};base64,${imageDataBase64}`, mimeType);
         } else {
             this.addMessage("Cannot send image. WebSocket not connected, image data or mime type missing.", "error-message");
+        }
+    }
+
+    /**
+     * @param {string} audioDataBase64 - L\'audio encodé en base64
+     * @param {string} mimeType - Le type MIME de l\'audio (par exemple, \'audio/webm;codecs=opus\')
+     */
+    sendAudioMessage(audioDataBase64, mimeType) {
+        if (audioDataBase64 && mimeType && this._ws && this._ws.readyState === WebSocket.OPEN) {
+            this._isThinking = true;
+            const payload = {
+                type: "audio",
+                data: audioDataBase64,
+                mime_type: mimeType
+            };
+            this._ws.send(JSON.stringify(payload));
+            // La transcription sera reçue et affichée via WebSocket
+        } else {
+            this.addMessage("Cannot send audio. WebSocket not connected, audio data or mime type missing.", "error-message");
         }
     }
 
@@ -647,6 +670,10 @@ export const sendImageMessage = (
     /** @type {string} */ mimeType,
     /** @type {string | undefined} */ prompt
 ) => chatState.sendImageMessage(imageDataBase64, mimeType, prompt);
+export const sendAudioMessage = (
+    /** @type {string} */ audioDataBase64,
+    /** @type {string} */ mimeType
+) => chatState.sendAudioMessage(audioDataBase64, mimeType);
 
 /**
  * Crée une nouvelle session pour l'utilisateur actuel.

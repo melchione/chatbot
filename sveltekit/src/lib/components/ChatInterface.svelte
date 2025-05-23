@@ -98,6 +98,29 @@
     /** @type {HTMLInputElement | null} */
     let fileInput = null;
 
+    // Nouvelles variables pour l'enregistrement audio
+    /** @type {MediaRecorder | null} */
+    let mediaRecorder = null;
+    /** @type {MediaStream | null} */
+    let audioStream = null;
+    /** @type {AudioContext | null} */
+    let audioContext = null;
+    /** @type {AnalyserNode | null} */
+    let analyser = null;
+    /** @type {Float32Array | null} */
+    let dataArray = null;
+    let isRecording = $state(false);
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    let recordingTimeout = null;
+    /** @type {ReturnType<typeof setTimeout> | null} */
+    let silenceTimeout = null;
+    let recordingStartTime = 0;
+    const MAX_RECORDING_TIME = 30000; // 30 secondes
+    const SILENCE_THRESHOLD = 0.01; // Seuil de silence
+    const SILENCE_DURATION = 1000; // 1 seconde de silence
+    /** @type {Blob[]} */
+    let audioChunks = [];
+
     // imagePreviewUrl est maintenant une valeur dérivée.
     // Elle retourne l'URL de l'objet ou null.
     const imagePreviewUrl = $derived.by(() => {
@@ -241,6 +264,185 @@
             fileInput.value = "";
         }
     }
+
+    // Fonctions pour l'enregistrement audio
+    async function startRecording() {
+        try {
+            // Demander l'accès au micro
+            audioStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    sampleRate: 16000,
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                },
+            });
+
+            // Créer le MediaRecorder
+            mediaRecorder = new MediaRecorder(audioStream, {
+                mimeType: "audio/webm;codecs=opus",
+            });
+
+            // Configurer l'AudioContext pour la détection de silence
+            audioContext = new AudioContext({ sampleRate: 16000 });
+            const source = audioContext.createMediaStreamSource(audioStream);
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 512;
+            source.connect(analyser);
+
+            const bufferLength = analyser.frequencyBinCount;
+            dataArray = new Float32Array(bufferLength);
+
+            // Réinitialiser les chunks audio
+            audioChunks = [];
+
+            // Configurer les événements du MediaRecorder
+            mediaRecorder.ondataavailable = (event) => {
+                if (event.data.size > 0) {
+                    audioChunks.push(event.data);
+                }
+            };
+
+            mediaRecorder.onstop = () => {
+                processRecordedAudio();
+            };
+
+            // Démarrer l'enregistrement
+            mediaRecorder.start(100); // Chunk toutes les 100ms
+            isRecording = true;
+            recordingStartTime = Date.now();
+
+            // Timeout maximum de 30 secondes
+            recordingTimeout = setTimeout(() => {
+                stopRecording();
+            }, MAX_RECORDING_TIME);
+
+            // Démarrer la détection de silence
+            detectSilence();
+
+            console.log("[startRecording] Enregistrement démarré");
+        } catch (error) {
+            console.error("Erreur d'accès au microphone:", error);
+            chatState.addMessage(
+                "Erreur : Impossible d'accéder au microphone. Veuillez autoriser l'accès au microphone dans votre navigateur.",
+                "error-message",
+            );
+        }
+    }
+
+    function detectSilence() {
+        if (!analyser || !dataArray || !isRecording) return;
+
+        analyser.getFloatTimeDomainData(dataArray);
+
+        // Calculer le niveau sonore RMS
+        let rms = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+            rms += dataArray[i] * dataArray[i];
+        }
+        rms = Math.sqrt(rms / dataArray.length);
+
+        if (rms < SILENCE_THRESHOLD) {
+            // Silence détecté
+            if (!silenceTimeout) {
+                silenceTimeout = setTimeout(() => {
+                    console.log(
+                        "[detectSilence] Silence détecté, arrêt de l'enregistrement",
+                    );
+                    stopRecording();
+                }, SILENCE_DURATION);
+            }
+        } else {
+            // Son détecté, annuler le timeout de silence
+            if (silenceTimeout) {
+                clearTimeout(silenceTimeout);
+                silenceTimeout = null;
+            }
+        }
+
+        // Continuer la détection si on enregistre encore
+        if (isRecording) {
+            requestAnimationFrame(detectSilence);
+        }
+    }
+
+    function stopRecording() {
+        if (!isRecording) return;
+
+        isRecording = false;
+
+        // Nettoyer les timeouts
+        if (recordingTimeout) {
+            clearTimeout(recordingTimeout);
+            recordingTimeout = null;
+        }
+        if (silenceTimeout) {
+            clearTimeout(silenceTimeout);
+            silenceTimeout = null;
+        }
+
+        // Arrêter le MediaRecorder
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            mediaRecorder.stop();
+        }
+
+        // Nettoyer les ressources audio
+        cleanupAudioResources();
+
+        console.log("[stopRecording] Enregistrement arrêté");
+    }
+
+    function cleanupAudioResources() {
+        // Fermer l'AudioContext
+        if (audioContext && audioContext.state !== "closed") {
+            audioContext.close();
+            audioContext = null;
+        }
+
+        // Arrêter le flux audio
+        if (audioStream) {
+            audioStream.getTracks().forEach((track) => track.stop());
+            audioStream = null;
+        }
+
+        // Nettoyer les références
+        analyser = null;
+        dataArray = null;
+        mediaRecorder = null;
+    }
+
+    async function processRecordedAudio() {
+        if (audioChunks.length === 0) {
+            console.log("[processRecordedAudio] Aucun chunk audio à traiter");
+            return;
+        }
+
+        // Créer un blob avec tous les chunks
+        const audioBlob = new Blob(audioChunks, {
+            type: "audio/webm;codecs=opus",
+        });
+
+        // Convertir en ArrayBuffer puis en base64
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+        const base64Audio = btoa(String.fromCharCode(...uint8Array));
+
+        // Envoyer l'audio au serveur
+        chatState.sendAudioMessage(base64Audio, "audio/webm;codecs=opus");
+
+        // Nettoyer les chunks
+        audioChunks = [];
+
+        console.log("[processRecordedAudio] Audio traité et envoyé");
+    }
+
+    function toggleRecording() {
+        if (isRecording) {
+            stopRecording();
+        } else {
+            startRecording();
+        }
+    }
 </script>
 
 <svelte:head>
@@ -365,6 +567,23 @@
                 disabled={!chatState.isConnected}
             >
                 <span class="text-5xl text-white">+</span>
+            </button>
+            <button
+                type="button"
+                onclick={toggleRecording}
+                class="mr-2.5 relative -top-1 cursor-pointer text-lg disabled:cursor-not-allowed disabled:text-gray-500"
+                title={isRecording
+                    ? "Arrêter l'enregistrement"
+                    : "Enregistrer un message vocal"}
+                disabled={!chatState.isConnected}
+            >
+                <span
+                    class="text-4xl {isRecording
+                        ? 'text-red-500'
+                        : 'text-white'}"
+                >
+                    {isRecording ? "🔴" : "🎤"}
+                </span>
             </button>
             <input
                 type="file"

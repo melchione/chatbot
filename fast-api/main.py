@@ -6,6 +6,7 @@ import sqlite3  # Ajout pour l'accès direct à la BDD
 from typing import Any, Optional
 
 from features.agents.marketing_agent.agent import root_agent  # Votre import
+from shared.lib.transcription import transcript_audio
 
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -86,22 +87,6 @@ async def startup_event():
         # Gérer l'erreur comme il convient (par exemple, ne pas démarrer le serveur)
 
 
-if not STATIC_DIR.is_dir():
-    logger.error(f"Static directory not found at {STATIC_DIR}. UI will not be served.")
-else:
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-    logger.info(f"Serving static files from {STATIC_DIR}")
-
-    @app.get("/")
-    async def read_index():
-        index_path = STATIC_DIR / "index.html"
-        if not index_path.is_file():
-            logger.error("index.html not found in static directory.")
-            return {"error": "index.html not found"}, 404
-        logger.debug("Serving index.html")
-        return FileResponse(str(index_path))
-
-
 @app.websocket("/ws/create_session/{client_id}")
 async def create_session_adk(websocket: WebSocket, client_id: str):
     await websocket.accept()
@@ -176,6 +161,76 @@ async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_i
                     )
                     await websocket.send_json(
                         {"type": "error", "message": "Invalid text payload."}
+                    )
+                    continue
+
+            elif message_type == "audio":
+                mime_type = client_message_json.get(
+                    "mime_type", "audio/webm;codecs=opus"
+                )
+
+                if not isinstance(message_data, str):
+                    logger.warning(
+                        f"Received ADK audio message with invalid data (not string): {message_data}"
+                    )
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Invalid audio payload (expected base64 string).",
+                        }
+                    )
+                    continue
+
+                try:
+                    # Décoder l'audio base64
+                    audio_bytes = base64.b64decode(message_data)
+
+                    # Effectuer la transcription directement avec les bytes WebM
+                    if mime_type.startswith("audio/webm"):
+                        # Importer la fonction de transcription WebM
+                        from shared.lib.transcription import transcript_audio_webm
+
+                        transcribed_text = transcript_audio_webm(audio_bytes)
+                    else:
+                        # Pour d'autres formats, utiliser la fonction standard
+                        transcribed_text = transcript_audio(audio_bytes)
+
+                    if transcribed_text and transcribed_text.strip():
+                        # Envoyer d'abord la transcription à l'utilisateur
+                        await websocket.send_json(
+                            {"type": "transcription", "text": transcribed_text}
+                        )
+
+                        # Ajouter le texte transcrit comme un message texte normal
+                        parts_for_content.append(
+                            genai.types.Part(text=transcribed_text)
+                        )
+                        logger.info(
+                            f"Audio transcribed successfully: '{transcribed_text}'"
+                        )
+                    else:
+                        logger.warning("Audio transcription returned empty text")
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": "Could not transcribe audio - no speech detected.",
+                            }
+                        )
+                        continue
+
+                except base64.binascii.Error as b64_error:
+                    logger.error(
+                        f"Error decoding base64 audio data for ADK: {b64_error}",
+                        exc_info=True,
+                    )
+                    await websocket.send_json(
+                        {"type": "error", "message": "Invalid base64 audio data."}
+                    )
+                    continue
+                except Exception as e:
+                    logger.error(f"Error processing ADK audio data: {e}", exc_info=True)
+                    await websocket.send_json(
+                        {"type": "error", "message": "Error processing audio data."}
                     )
                     continue
 
@@ -314,16 +369,8 @@ async def websocket_endpoint_adk(websocket: WebSocket, client_id: str, session_i
             )
     finally:
         logger.info(f"Closing ADK WebSocket connection for client {client_id}.")
-        with suppress(Exception):  # Safely attempt to close
+        with suppress(Exception):  # Safely attempt to closewx
             await websocket.close()
-
-
-# --- Utility function to get DB connection ---
-def get_db_connection():
-    # Assurez-vous que le chemin est correct et accessible
-    conn = sqlite3.connect(DATABASE_FILE_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 @app.delete("/sessions/{user_id}/{session_id}")
@@ -452,31 +499,4 @@ async def get_session_history_adk(user_id: str, session_id: str):
         )
         raise HTTPException(
             status_code=500, detail="Error retrieving ADK session history."
-        )
-
-
-if __name__ == "__main__":
-    load_dotenv()
-    server_host = os.getenv("SERVER_HOST", "127.0.0.1")
-    raw_port = os.getenv("SERVER_PORT", "8000")
-    server_port = 8000
-    try:
-        server_port = int(raw_port)
-    except ValueError:
-        logger.warning(
-            f"Invalid SERVER_PORT: '{raw_port}'. Defaulting to {server_port}."
-        )
-
-    logger.info(
-        f"Starting FastAPI server (direct run with ADK) on http://{server_host}:{server_port}"
-    )
-    try:
-        import uvicorn
-
-        uvicorn.run(app, host=server_host, port=server_port, log_level="info")
-    except ImportError:
-        logger.critical("Uvicorn not installed. Run 'pip install uvicorn[standard]'.")
-    except Exception as startup_error:
-        logger.critical(
-            f"Failed to start Uvicorn server: {startup_error}", exc_info=True
         )
