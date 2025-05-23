@@ -2,6 +2,7 @@
     import { onMount } from "svelte";
     import { chatState, createNewSession } from "$lib/chatLogic.svelte.js";
     import { marked } from "marked";
+    import { PUBLIC_FAST_API_URL } from "$env/static/public";
 
     const USER_ID = "test_user";
 
@@ -125,6 +126,13 @@
     let lastSegmentTime = 0; // Timestamp du dernier segment traité
     let speechDetectedDuration = 0; // Durée totale de parole détectée dans le segment actuel
     let lastSpeechDetection = 0; // Timestamp de la dernière détection de parole
+
+    // Variables pour TTS (Text-to-Speech)
+    /** @type {HTMLAudioElement | null} */
+    let audioPlayer = null;
+    /** @type {string | null} */
+    let currentlyPlayingMessageId = $state(null);
+    let isLoadingTTS = $state(false);
 
     // imagePreviewUrl est maintenant une valeur dérivée.
     // Elle retourne l'URL de l'objet ou null.
@@ -682,6 +690,98 @@
             startRecording();
         }
     }
+
+    // Fonctions TTS (Text-to-Speech)
+    /**
+     * Lit le message de l'agent avec synthèse vocale
+     * @param {string} messageId - L'ID du message à lire
+     * @param {string} messageText - Le texte du message à lire
+     */
+    async function playMessage(messageId, messageText) {
+        try {
+            // Si un audio est déjà en cours, l'arrêter
+            if (audioPlayer && !audioPlayer.paused) {
+                audioPlayer.pause();
+                audioPlayer.currentTime = 0;
+            }
+
+            // Si c'est le même message, toggle play/pause
+            if (currentlyPlayingMessageId === messageId) {
+                currentlyPlayingMessageId = null;
+                return;
+            }
+
+            isLoadingTTS = true;
+            currentlyPlayingMessageId = messageId;
+
+            // Envoyer le texte à l'API TTS
+            const httpBaseUrl = PUBLIC_FAST_API_URL;
+            const response = await fetch(`${httpBaseUrl}/tts`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ text: messageText }),
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            // Récupérer l'audio en tant que blob
+            const audioBlob = await response.blob();
+            const audioUrl = URL.createObjectURL(audioBlob);
+
+            // Créer et configurer l'audio player
+            audioPlayer = new Audio(audioUrl);
+
+            audioPlayer.onloadstart = () => {
+                isLoadingTTS = true;
+            };
+
+            audioPlayer.oncanplay = () => {
+                isLoadingTTS = false;
+            };
+
+            audioPlayer.onended = () => {
+                currentlyPlayingMessageId = null;
+                isLoadingTTS = false;
+                URL.revokeObjectURL(audioUrl);
+            };
+
+            audioPlayer.onerror = () => {
+                console.error("Erreur lors de la lecture audio");
+                currentlyPlayingMessageId = null;
+                isLoadingTTS = false;
+                URL.revokeObjectURL(audioUrl);
+            };
+
+            // Démarrer la lecture
+            await audioPlayer.play();
+        } catch (error) {
+            console.error("Erreur TTS:", error);
+            const errorMessage =
+                error instanceof Error ? error.message : "Erreur inconnue";
+            chatState.addMessage(
+                "Erreur lors de la synthèse vocale: " + errorMessage,
+                "error-message",
+            );
+            currentlyPlayingMessageId = null;
+            isLoadingTTS = false;
+        }
+    }
+
+    /**
+     * Arrête la lecture audio en cours
+     */
+    function stopPlayback() {
+        if (audioPlayer && !audioPlayer.paused) {
+            audioPlayer.pause();
+            audioPlayer.currentTime = 0;
+        }
+        currentlyPlayingMessageId = null;
+        isLoadingTTS = false;
+    }
 </script>
 
 <svelte:head>
@@ -759,7 +859,38 @@
                             />
                         {/if}
                         {#if message.type === "agent-message"}
-                            {@html parseMarkdown(message.text)}
+                            <div class="flex items-start gap-2">
+                                <div class="flex-grow">
+                                    {@html parseMarkdown(message.text)}
+                                </div>
+                                <button
+                                    onclick={() =>
+                                        playMessage(
+                                            String(message.id),
+                                            message.text,
+                                        )}
+                                    class="flex-shrink-0 mt-1 p-1 rounded-full hover:bg-gray-100 transition-colors duration-200"
+                                    title={currentlyPlayingMessageId ===
+                                    message.id
+                                        ? "Arrêter la lecture"
+                                        : isLoadingTTS
+                                          ? "Chargement..."
+                                          : "Écouter ce message"}
+                                    disabled={isLoadingTTS &&
+                                        currentlyPlayingMessageId !==
+                                            message.id}
+                                >
+                                    <span class="text-lg">
+                                        {#if isLoadingTTS && currentlyPlayingMessageId === message.id}
+                                            🔄
+                                        {:else if currentlyPlayingMessageId === message.id}
+                                            🔊
+                                        {:else}
+                                            🔉
+                                        {/if}
+                                    </span>
+                                </button>
+                            </div>
                         {:else}
                             {@html message.text}
                         {/if}

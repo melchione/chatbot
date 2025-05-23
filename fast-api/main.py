@@ -22,6 +22,7 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
     HTTPException,
+    Response,
 )
 from starlette.responses import (
     FileResponse,
@@ -29,6 +30,8 @@ from starlette.responses import (
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from contextlib import suppress
+from pydantic import BaseModel
+from shared.lib.tts import text_to_audio_bytes
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -500,3 +503,41 @@ async def get_session_history_adk(user_id: str, session_id: str):
         raise HTTPException(
             status_code=500, detail="Error retrieving ADK session history."
         )
+
+
+# --- Endpoint TTS pour synthèse vocale ---
+
+
+class TTSRequest(BaseModel):
+    text: str
+
+
+@app.post("/tts")
+async def text_to_speech(request: TTSRequest):
+    """
+    Endpoint pour convertir du texte en audio avec synthèse vocale.
+    """
+    try:
+        logger.info(f"TTS request received for text length: {len(request.text)}")
+
+        # Générer l'audio à partir du texte
+        audio_bytes = text_to_audio_bytes(request.text)
+
+        logger.info(f"TTS audio generated successfully, size: {len(audio_bytes)} bytes")
+
+        # Retourner l'audio en tant que réponse MP3
+        return Response(
+            content=audio_bytes,
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": "inline; filename=speech.mp3",
+                "Cache-Control": "no-cache",
+            },
+        )
+
+    except ValueError as ve:
+        logger.warning(f"TTS validation error: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"TTS generation error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Error generating speech audio")
