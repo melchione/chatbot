@@ -693,57 +693,7 @@
 
     // Fonctions TTS (Text-to-Speech)
     /**
-     * Découpe le texte en segments intelligents pour la synthèse vocale
-     * @param {string} text - Le texte à découper
-     * @param {number} maxLength - Longueur maximale par segment
-     * @returns {string[]} - Tableau des segments
-     */
-    function splitTextIntoSegments(text, maxLength = 200) {
-        const segments = [];
-        let currentSegment = "";
-
-        // Découper d'abord par phrases (points, points d'exclamation, points d'interrogation)
-        const sentences = text.split(/(?<=[.!?])\s+/);
-
-        for (const sentence of sentences) {
-            // Si la phrase seule dépasse la limite, la découper par virgules
-            if (sentence.length > maxLength) {
-                const parts = sentence.split(/(?<=,)\s+/);
-                for (const part of parts) {
-                    if (
-                        currentSegment.length + part.length > maxLength &&
-                        currentSegment.length > 0
-                    ) {
-                        segments.push(currentSegment.trim());
-                        currentSegment = part;
-                    } else {
-                        currentSegment += (currentSegment ? " " : "") + part;
-                    }
-                }
-            } else {
-                // Si ajouter cette phrase dépasse la limite, finaliser le segment actuel
-                if (
-                    currentSegment.length + sentence.length > maxLength &&
-                    currentSegment.length > 0
-                ) {
-                    segments.push(currentSegment.trim());
-                    currentSegment = sentence;
-                } else {
-                    currentSegment += (currentSegment ? " " : "") + sentence;
-                }
-            }
-        }
-
-        // Ajouter le dernier segment s'il n'est pas vide
-        if (currentSegment.trim()) {
-            segments.push(currentSegment.trim());
-        }
-
-        return segments.filter((segment) => segment.length > 0);
-    }
-
-    /**
-     * Lit le message de l'agent avec synthèse vocale en segments
+     * Lit le message de l'agent avec synthèse vocale en streaming depuis le serveur
      * @param {string} messageId - L'ID du message à lire
      * @param {string} messageText - Le texte du message à lire
      */
@@ -764,19 +714,12 @@
             isLoadingTTS = true;
             currentlyPlayingMessageId = messageId;
 
-            // Découper le texte en segments
-            const segments = splitTextIntoSegments(messageText);
             console.log(
-                `[TTS] Message découpé en ${segments.length} segments:`,
-                segments,
+                `[TTS] Envoi du texte complet au serveur pour traitement: "${messageText.substring(0, 50)}..."`,
             );
 
-            if (segments.length === 0) {
-                throw new Error("Aucun segment de texte à synthétiser");
-            }
-
-            // Démarrer la synthèse et lecture en streaming
-            await playSegmentsSequentially(segments, messageId);
+            // Démarrer le streaming depuis le serveur
+            await playMessageWithServerStreaming(messageText, messageId);
         } catch (error) {
             console.error("Erreur TTS:", error);
             const errorMessage =
@@ -791,122 +734,156 @@
     }
 
     /**
-     * Joue les segments de manière séquentielle avec préparation en arrière-plan
-     * @param {string[]} segments - Les segments à jouer
+     * Joue les segments reçus du serveur en streaming
+     * @param {string} messageText - Le texte complet du message
      * @param {string} messageId - L'ID du message original
      */
-    async function playSegmentsSequentially(segments, messageId) {
+    async function playMessageWithServerStreaming(messageText, messageId) {
         const httpBaseUrl = PUBLIC_FAST_API_URL;
-        /** @type {Array<{audioUrl: string, index: number}>} */
-        let audioQueue = [];
-        let currentIndex = 0;
-        let isPlaying = false;
 
-        // Fonction pour synthétiser un segment
-        /**
-         * @param {string} text
-         * @param {number} index
-         */
-        async function synthesizeSegment(text, index) {
-            console.log(
-                `[TTS] Synthèse segment ${index + 1}/${segments.length}: "${text.substring(0, 50)}..."`,
-            );
-
-            const response = await fetch(`${httpBaseUrl}/tts`, {
+        try {
+            const response = await fetch(`${httpBaseUrl}/tts-stream`, {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
                 },
-                body: JSON.stringify({ text }),
+                body: JSON.stringify({ text: messageText }),
             });
 
             if (!response.ok) {
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
 
-            const audioBlob = await response.blob();
-            const audioUrl = URL.createObjectURL(audioBlob);
-
-            console.log(`[TTS] Segment ${index + 1} synthétisé avec succès`);
-            return { audioUrl, index };
-        }
-
-        // Fonction pour jouer le prochain segment dans la queue
-        async function playNextSegment() {
-            if (currentlyPlayingMessageId !== messageId) {
-                console.log("[TTS] Lecture arrêtée par l'utilisateur");
-                return;
+            const reader = response.body?.getReader();
+            if (!reader) {
+                throw new Error("Impossible de lire le stream de réponse");
             }
 
-            if (currentIndex < audioQueue.length) {
-                const { audioUrl } = audioQueue[currentIndex];
+            const decoder = new TextDecoder();
+            let buffer = "";
+            /** @type {Array<{audioUrl: string, index: number, text: string}>} */
+            let audioQueue = [];
+            let currentPlayingIndex = 0;
+            let isPlayingStarted = false;
 
-                audioPlayer = new Audio(audioUrl);
+            // Fonction pour jouer le prochain segment dans la queue
+            async function playNextInQueue() {
+                if (currentlyPlayingMessageId !== messageId) {
+                    console.log(
+                        "[TTS Stream] Lecture arrêtée par l'utilisateur",
+                    );
+                    return;
+                }
 
-                audioPlayer.oncanplay = () => {
-                    if (currentIndex === 0) {
-                        isLoadingTTS = false; // Premier segment prêt
-                    }
-                };
+                if (currentPlayingIndex < audioQueue.length) {
+                    const { audioUrl, text } = audioQueue[currentPlayingIndex];
+                    console.log(
+                        `[TTS Stream] Lecture du segment ${currentPlayingIndex + 1}: "${text.substring(0, 30)}..."`,
+                    );
 
-                audioPlayer.onended = async () => {
-                    URL.revokeObjectURL(audioUrl);
-                    currentIndex++;
+                    audioPlayer = new Audio(audioUrl);
 
-                    if (currentIndex < segments.length) {
-                        // Il y a encore des segments à jouer
-                        await playNextSegment();
-                    } else {
-                        // Fin de tous les segments
-                        console.log(
-                            "[TTS] Lecture de tous les segments terminée",
-                        );
+                    audioPlayer.oncanplay = () => {
+                        if (currentPlayingIndex === 0) {
+                            isLoadingTTS = false; // Premier segment prêt
+                        }
+                    };
+
+                    audioPlayer.onended = async () => {
+                        URL.revokeObjectURL(audioUrl);
+                        currentPlayingIndex++;
+                        await playNextInQueue();
+                    };
+
+                    audioPlayer.onerror = () => {
+                        console.error("Erreur lors de la lecture du segment");
+                        URL.revokeObjectURL(audioUrl);
                         currentlyPlayingMessageId = null;
                         isLoadingTTS = false;
-                    }
-                };
+                    };
 
-                audioPlayer.onerror = () => {
-                    console.error("Erreur lors de la lecture du segment");
-                    URL.revokeObjectURL(audioUrl);
+                    await audioPlayer.play();
+                } else {
+                    // Plus de segments à jouer
+                    console.log(
+                        "[TTS Stream] Lecture de tous les segments terminée",
+                    );
                     currentlyPlayingMessageId = null;
                     isLoadingTTS = false;
-                };
-
-                await audioPlayer.play();
-                console.log(
-                    `[TTS] Lecture du segment ${currentIndex + 1}/${segments.length} démarrée`,
-                );
+                }
             }
-        }
 
-        // Synthétiser et jouer les segments
-        try {
-            // Lancer la synthèse du premier segment immédiatement
-            const firstSegmentPromise = synthesizeSegment(segments[0], 0);
+            // Lire le stream
+            while (true) {
+                const { done, value } = await reader.read();
 
-            // Lancer les autres synthèses en parallèle
-            const otherSegmentsPromises = segments
-                .slice(1)
-                .map((segment, index) => synthesizeSegment(segment, index + 1));
+                if (done) {
+                    console.log("[TTS Stream] Stream terminé");
+                    break;
+                }
 
-            // Attendre le premier segment et le jouer immédiatement
-            const firstSegment = await firstSegmentPromise;
-            audioQueue[0] = firstSegment;
-            await playNextSegment();
+                buffer += decoder.decode(value, { stream: true });
 
-            // Attendre les autres segments et les ajouter à la queue dans l'ordre
-            if (otherSegmentsPromises.length > 0) {
-                const otherSegments = await Promise.all(otherSegmentsPromises);
-                otherSegments.forEach((segment) => {
-                    audioQueue[segment.index] = segment;
-                });
-                console.log(
-                    `[TTS] Tous les ${segments.length} segments synthétisés`,
-                );
+                // Traiter les lignes complètes dans le buffer
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || ""; // Garder la ligne incomplète
+
+                for (const line of lines) {
+                    if (line.startsWith("data: ")) {
+                        try {
+                            const data = JSON.parse(line.substring(6));
+
+                            if (data.error) {
+                                console.error(
+                                    `[TTS Stream] Erreur segment ${data.index}:`,
+                                    data.error,
+                                );
+                                continue;
+                            }
+
+                            console.log(
+                                `[TTS Stream] Segment ${data.index + 1}/${data.total_segments} reçu`,
+                            );
+
+                            // Décoder l'audio et créer l'URL
+                            const audioBytes = Uint8Array.from(
+                                atob(data.audio_data),
+                                (c) => c.charCodeAt(0),
+                            );
+                            const audioBlob = new Blob([audioBytes], {
+                                type: "audio/mpeg",
+                            });
+                            const audioUrl = URL.createObjectURL(audioBlob);
+
+                            // Ajouter à la queue
+                            audioQueue[data.index] = {
+                                audioUrl,
+                                index: data.index,
+                                text: data.text,
+                            };
+
+                            // Démarrer la lecture du premier segment dès qu'il arrive
+                            if (data.index === 0 && !isPlayingStarted) {
+                                isPlayingStarted = true;
+                                await playNextInQueue();
+                            }
+                        } catch (parseError) {
+                            console.error(
+                                "[TTS Stream] Erreur parsing JSON:",
+                                parseError,
+                            );
+                        }
+                    }
+                }
+
+                // Vérifier si l'utilisateur a arrêté la lecture
+                if (currentlyPlayingMessageId !== messageId) {
+                    reader.cancel();
+                    break;
+                }
             }
         } catch (error) {
-            console.error("Erreur lors de la synthèse des segments:", error);
+            console.error("Erreur lors du streaming TTS:", error);
             currentlyPlayingMessageId = null;
             isLoadingTTS = false;
             throw error;

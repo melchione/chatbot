@@ -69,7 +69,10 @@ async def clean_markdown_for_speech_ai(text: str) -> str:
     agent = LlmAgent(
         model=Models.GEMINI_20_FLASH,
         name="text_to_json",
-        instruction="Tu va recevoir un texte au format markdown. Tu dois nettoyer le texte pour une synthèse vocale naturelle.",
+        instruction="""Tu va recevoir un texte au format markdown. Tu dois nettoyer le texte pour une synthèse vocale naturelle. 
+        Je veux que tu me retourne ta réponse au format json suivant: 
+        { "text": <texte nettoyé> }
+        """,
         description="Tu es un assistant qui nettoie le texte markdown pour une synthèse vocale naturelle.",  # Description utilisée comme base, mais l'input sera passé séparément
     )
     # Appel de la fonction utilitaire
@@ -240,3 +243,81 @@ def clean_markdown_for_speech(text: str) -> str:
 
     print("AFTER", text)
     return text.strip()
+
+
+def split_text_into_segments(text: str, max_length: int = 200) -> list[str]:
+    """
+    Découpe le texte en segments intelligents pour la synthèse vocale.
+    Reprend la logique du frontend splitTextIntoSegments.
+    """
+    segments = []
+    current_segment = ""
+
+    # Découper d'abord par phrases (points, points d'exclamation, points d'interrogation)
+    sentences = re.split(r"(?<=[.!?])\s+", text)
+
+    for sentence in sentences:
+        # Si la phrase seule dépasse la limite, la découper par virgules
+        if len(sentence) > max_length:
+            parts = re.split(r"(?<=,)\s+", sentence)
+            for part in parts:
+                if (
+                    len(current_segment) + len(part) > max_length
+                    and len(current_segment) > 0
+                ):
+                    segments.append(current_segment.strip())
+                    current_segment = part
+                else:
+                    current_segment += (" " + part) if current_segment else part
+        else:
+            # Si ajouter cette phrase dépasse la limite, finaliser le segment actuel
+            if (
+                len(current_segment) + len(sentence) > max_length
+                and len(current_segment) > 0
+            ):
+                segments.append(current_segment.strip())
+                current_segment = sentence
+            else:
+                current_segment += (" " + sentence) if current_segment else sentence
+
+    # Ajouter le dernier segment s'il n'est pas vide
+    if current_segment.strip():
+        segments.append(current_segment.strip())
+
+    return [segment for segment in segments if len(segment) > 0]
+
+
+async def process_text_and_generate_segments(text: str) -> list[str]:
+    """
+    Nettoie le texte avec l'IA et le découpe en segments intelligents.
+    """
+    # Nettoyer le markdown avec l'IA
+    clean_text = await clean_markdown_for_speech_ai(text)
+
+    # Découper en segments
+    segments = split_text_into_segments(clean_text)
+
+    return segments
+
+
+async def generate_audio_for_segment(segment: str) -> bytes:
+    """
+    Génère l'audio pour un segment de texte donné.
+    """
+    voice_name = "fr-FR-Chirp-HD-D"
+    language_code = "-".join(voice_name.split("-")[:2])
+    text_input = tts.SynthesisInput(text=segment)
+    voice_params = tts.VoiceSelectionParams(
+        language_code=language_code, name=voice_name
+    )
+    # Utiliser MP3 pour une meilleure compression sur le web
+    audio_config = tts.AudioConfig(audio_encoding=tts.AudioEncoding.MP3)
+
+    client = tts.TextToSpeechClient()
+    response = client.synthesize_speech(
+        input=text_input,
+        voice=voice_params,
+        audio_config=audio_config,
+    )
+
+    return response.audio_content

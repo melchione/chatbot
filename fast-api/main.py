@@ -31,7 +31,11 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from contextlib import suppress
 from pydantic import BaseModel
-from shared.lib.tts import text_to_audio_bytes
+from shared.lib.tts import (
+    text_to_audio_bytes,
+    process_text_and_generate_segments,
+    generate_audio_for_segment,
+)
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -512,6 +516,10 @@ class TTSRequest(BaseModel):
     text: str
 
 
+class TTSStreamRequest(BaseModel):
+    text: str
+
+
 @app.post("/tts")
 async def text_to_speech(request: TTSRequest):
     """
@@ -541,3 +549,79 @@ async def text_to_speech(request: TTSRequest):
     except Exception as e:
         logger.error(f"TTS generation error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Error generating speech audio")
+
+
+@app.post("/tts-stream")
+async def text_to_speech_stream(request: TTSStreamRequest):
+    """
+    Endpoint pour convertir du texte en audio avec streaming des segments.
+    Le texte est nettoyé avec l'IA et découpé intelligemment côté serveur.
+    """
+    try:
+        logger.info(f"TTS stream request received for text length: {len(request.text)}")
+
+        # Traiter le texte et générer les segments
+        segments = await process_text_and_generate_segments(request.text)
+        logger.info(f"Text divided into {len(segments)} segments")
+
+        if not segments:
+            raise HTTPException(
+                status_code=400, detail="No valid segments generated from text"
+            )
+
+        async def generate_audio_stream():
+            """Générateur qui yield les segments audio un par un"""
+            for i, segment in enumerate(segments):
+                try:
+                    logger.info(
+                        f"Generating audio for segment {i+1}/{len(segments)}: {segment[:50]}..."
+                    )
+
+                    # Générer l'audio pour ce segment
+                    audio_bytes = await generate_audio_for_segment(segment)
+
+                    # Créer un envelope JSON avec les métadonnées du segment
+                    import json
+                    import base64
+
+                    segment_data = {
+                        "index": i,
+                        "total_segments": len(segments),
+                        "text": segment,
+                        "audio_data": base64.b64encode(audio_bytes).decode("utf-8"),
+                        "is_final": i == len(segments) - 1,
+                    }
+
+                    # Yield le segment avec délimiteur pour le parsing côté client
+                    yield f"data: {json.dumps(segment_data)}\n\n"
+
+                    logger.info(f"Segment {i+1}/{len(segments)} generated and sent")
+
+                except Exception as e:
+                    logger.error(f"Error generating segment {i+1}: {e}")
+                    error_data = {
+                        "error": f"Error generating segment {i+1}: {str(e)}",
+                        "index": i,
+                        "total_segments": len(segments),
+                    }
+                    yield f"data: {json.dumps(error_data)}\n\n"
+
+        from fastapi.responses import StreamingResponse
+
+        return StreamingResponse(
+            generate_audio_stream(),
+            media_type="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            },
+        )
+
+    except ValueError as ve:
+        logger.warning(f"TTS stream validation error: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"TTS stream generation error: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail="Error generating streaming speech audio"
+        )
