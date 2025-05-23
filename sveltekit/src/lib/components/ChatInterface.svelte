@@ -115,11 +115,16 @@
     /** @type {ReturnType<typeof setTimeout> | null} */
     let silenceTimeout = null;
     let recordingStartTime = 0;
-    const MAX_RECORDING_TIME = 30000; // 30 secondes
-    const SILENCE_THRESHOLD = 0.01; // Seuil de silence
-    const SILENCE_DURATION = 1000; // 1 seconde de silence
+    const MAX_RECORDING_TIME = 300000; // 5 minutes
+    const SILENCE_THRESHOLD = 0.02; // Seuil de silence légèrement plus élevé
+    const SILENCE_DURATION = 1500; // 1.5 secondes de silence
+    const MIN_SEGMENT_INTERVAL = 2000; // Minimum 2 secondes entre segments
     /** @type {Blob[]} */
     let audioChunks = [];
+    let isProcessingSegment = $state(false); // Nouveau: indique qu'un segment est en cours de traitement
+    let lastSegmentTime = 0; // Timestamp du dernier segment traité
+    let speechDetectedDuration = 0; // Durée totale de parole détectée dans le segment actuel
+    let lastSpeechDetection = 0; // Timestamp de la dernière détection de parole
 
     // imagePreviewUrl est maintenant une valeur dérivée.
     // Elle retourne l'URL de l'objet ou null.
@@ -304,7 +309,7 @@
             };
 
             mediaRecorder.onstop = () => {
-                processRecordedAudio();
+                processSegmentAudio();
             };
 
             // Démarrer l'enregistrement
@@ -342,17 +347,34 @@
         }
         rms = Math.sqrt(rms / dataArray.length);
 
+        const currentTime = Date.now();
+
         if (rms < SILENCE_THRESHOLD) {
             // Silence détecté
-            if (!silenceTimeout) {
+            if (!silenceTimeout && !isProcessingSegment) {
                 silenceTimeout = setTimeout(() => {
-                    console.log(
-                        "[detectSilence] Silence détecté, arrêt de l'enregistrement",
-                    );
-                    stopRecording();
+                    // Vérifier qu'on a eu au moins 500ms de parole avant de traiter
+                    if (speechDetectedDuration >= 500) {
+                        console.log(
+                            `[detectSilence] Pause détectée avec ${speechDetectedDuration}ms de parole, traitement du segment`,
+                        );
+                        processCurrentSegment();
+                    } else {
+                        console.log(
+                            `[detectSilence] Pause détectée mais seulement ${speechDetectedDuration}ms de parole, segment ignoré`,
+                        );
+                        // Réinitialiser pour le prochain segment
+                        speechDetectedDuration = 0;
+                    }
                 }, SILENCE_DURATION);
             }
         } else {
+            // Parole détectée
+            if (lastSpeechDetection > 0) {
+                speechDetectedDuration += currentTime - lastSpeechDetection;
+            }
+            lastSpeechDetection = currentTime;
+
             // Son détecté, annuler le timeout de silence
             if (silenceTimeout) {
                 clearTimeout(silenceTimeout);
@@ -381,13 +403,17 @@
             silenceTimeout = null;
         }
 
-        // Arrêter le MediaRecorder
+        // Changer temporairement l'événement onstop pour le traitement final
         if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            mediaRecorder.onstop = () => {
+                processRecordedAudio(); // Traitement final sans redémarrage
+                cleanupAudioResources();
+            };
             mediaRecorder.stop();
+        } else {
+            // Si pas de MediaRecorder actif, nettoyer directement
+            cleanupAudioResources();
         }
-
-        // Nettoyer les ressources audio
-        cleanupAudioResources();
 
         console.log("[stopRecording] Enregistrement arrêté");
     }
@@ -417,15 +443,48 @@
             return;
         }
 
+        // Vérifier s'il y a eu de la parole récente (dans les 3 dernières secondes)
+        const now = Date.now();
+        const timeSinceLastSpeech = now - lastSpeechDetection;
+
+        if (timeSinceLastSpeech > 3000 || speechDetectedDuration < 300) {
+            console.log(
+                `[processRecordedAudio] Segment final ignoré - pas de parole récente (${timeSinceLastSpeech}ms depuis dernière parole, ${speechDetectedDuration}ms de parole détectée)`,
+            );
+            audioChunks = [];
+            return;
+        }
+
         // Créer un blob avec tous les chunks
         const audioBlob = new Blob(audioChunks, {
             type: "audio/webm;codecs=opus",
         });
 
+        // Vérifier que le blob a une taille suffisante (au moins 2KB pour le segment final)
+        if (audioBlob.size < 2048) {
+            console.log(
+                `[processRecordedAudio] Segment final trop petit (${audioBlob.size} bytes), ignoré`,
+            );
+            audioChunks = [];
+            return;
+        }
+
+        console.log(
+            `[processRecordedAudio] Traitement du segment final de ${audioBlob.size} bytes avec ${speechDetectedDuration}ms de parole détectée`,
+        );
+
         // Convertir en ArrayBuffer puis en base64
         const arrayBuffer = await audioBlob.arrayBuffer();
         const uint8Array = new Uint8Array(arrayBuffer);
-        const base64Audio = btoa(String.fromCharCode(...uint8Array));
+
+        // Convertir en base64 par chunks pour éviter l'erreur de pile d'appels
+        let binaryString = "";
+        const chunkSize = 8192; // Traiter par blocs de 8KB
+        for (let i = 0; i < uint8Array.length; i += chunkSize) {
+            const chunk = uint8Array.slice(i, i + chunkSize);
+            binaryString += String.fromCharCode(...chunk);
+        }
+        const base64Audio = btoa(binaryString);
 
         // Envoyer l'audio au serveur
         chatState.sendAudioMessage(base64Audio, "audio/webm;codecs=opus");
@@ -434,6 +493,186 @@
         audioChunks = [];
 
         console.log("[processRecordedAudio] Audio traité et envoyé");
+    }
+
+    async function processCurrentSegment() {
+        if (isProcessingSegment) return; // Éviter les traitements multiples
+
+        // Ne pas traiter de nouveaux segments si l'agent est en train de répondre
+        if (chatState.isThinking) {
+            console.log(
+                "[processCurrentSegment] Agent en cours de réponse, segment ignoré",
+            );
+            // Nettoyer le timeout et ne pas traiter
+            if (silenceTimeout) {
+                clearTimeout(silenceTimeout);
+                silenceTimeout = null;
+            }
+            return;
+        }
+
+        // Vérifier l'intervalle minimum entre segments
+        const now = Date.now();
+        if (now - lastSegmentTime < MIN_SEGMENT_INTERVAL) {
+            console.log(
+                `[processCurrentSegment] Segment ignoré - trop proche du précédent (${now - lastSegmentTime}ms)`,
+            );
+            // Nettoyer le timeout et ne pas traiter
+            if (silenceTimeout) {
+                clearTimeout(silenceTimeout);
+                silenceTimeout = null;
+            }
+            return;
+        }
+
+        console.log("[processCurrentSegment] Début du traitement du segment");
+
+        // Nettoyer le timeout de silence
+        if (silenceTimeout) {
+            clearTimeout(silenceTimeout);
+            silenceTimeout = null;
+        }
+
+        isProcessingSegment = true;
+        lastSegmentTime = now;
+
+        // Arrêter temporairement le MediaRecorder pour récupérer les données
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            mediaRecorder.stop();
+        }
+
+        // Le traitement se fera dans l'événement onstop du MediaRecorder
+        // qui appellera processSegmentAudio()
+    }
+
+    async function processSegmentAudio() {
+        console.log(
+            "[processSegmentAudio] DÉBUT - audioChunks.length:",
+            audioChunks.length,
+        );
+
+        if (audioChunks.length === 0) {
+            console.log("[processSegmentAudio] Aucun chunk audio à traiter");
+            restartRecording();
+            return;
+        }
+
+        // Créer un blob avec les chunks du segment actuel
+        const audioBlob = new Blob(audioChunks, {
+            type: "audio/webm;codecs=opus",
+        });
+
+        // Vérifier que le blob a une taille suffisante (au moins 1KB)
+        if (audioBlob.size < 1024) {
+            console.log(
+                `[processSegmentAudio] Segment trop petit (${audioBlob.size} bytes), ignoré`,
+            );
+            // Nettoyer les chunks et redémarrer sans envoyer
+            audioChunks = [];
+            restartRecording();
+            return;
+        }
+
+        console.log(
+            `[processSegmentAudio] Traitement d'un segment de ${audioBlob.size} bytes avec parole détectée`,
+        );
+
+        // Convertir en ArrayBuffer puis en base64
+        const arrayBuffer = await audioBlob.arrayBuffer();
+        const uint8Array = new Uint8Array(arrayBuffer);
+
+        // Convertir en base64 par chunks pour éviter l'erreur de pile d'appels
+        let binaryString = "";
+        const chunkSize = 8192; // Traiter par blocs de 8KB
+        for (let i = 0; i < uint8Array.length; i += chunkSize) {
+            const chunk = uint8Array.slice(i, i + chunkSize);
+            binaryString += String.fromCharCode(...chunk);
+        }
+        const base64Audio = btoa(binaryString);
+
+        console.log("[processSegmentAudio] Envoi au serveur...");
+
+        // Envoyer l'audio au serveur
+        chatState.sendAudioMessage(base64Audio, "audio/webm;codecs=opus");
+
+        // Nettoyer les chunks pour le prochain segment
+        audioChunks = [];
+
+        console.log("[processSegmentAudio] Appel restartRecording...");
+
+        // Redémarrer l'enregistrement pour le prochain segment
+        restartRecording();
+    }
+
+    function restartRecording() {
+        console.log(
+            "[restartRecording] DÉBUT - isRecording:",
+            isRecording,
+            "isProcessingSegment:",
+            isProcessingSegment,
+        );
+
+        if (!isRecording) {
+            console.log("[restartRecording] ARRÊT - isRecording est false");
+            return; // Si l'utilisateur a fermé le micro, ne pas redémarrer
+        }
+
+        console.log("[restartRecording] Redémarrage de l'enregistrement...");
+
+        // Redémarrer le MediaRecorder pour le prochain segment
+        if (audioStream) {
+            try {
+                console.log(
+                    "[restartRecording] Création nouveau MediaRecorder...",
+                );
+                mediaRecorder = new MediaRecorder(audioStream, {
+                    mimeType: "audio/webm;codecs=opus",
+                });
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = () => {
+                    console.log(
+                        "[restartRecording] MediaRecorder.onstop déclenché",
+                    );
+                    processSegmentAudio();
+                };
+
+                console.log("[restartRecording] Démarrage MediaRecorder...");
+                mediaRecorder.start(100); // Chunk toutes les 100ms
+
+                // Remettre isProcessingSegment à false et réinitialiser les compteurs de parole
+                console.log(
+                    "[restartRecording] Remise à false de isProcessingSegment",
+                );
+                isProcessingSegment = false;
+                speechDetectedDuration = 0;
+                lastSpeechDetection = 0;
+
+                console.log(
+                    "[restartRecording] SUCCÈS - isProcessingSegment:",
+                    isProcessingSegment,
+                );
+            } catch (error) {
+                console.error(
+                    "[restartRecording] ERREUR lors du redémarrage:",
+                    error,
+                );
+                isProcessingSegment = false;
+                // En cas d'erreur, fermer complètement
+                stopRecording();
+            }
+        } else {
+            console.error(
+                "[restartRecording] ERREUR - Pas de stream audio disponible",
+            );
+            isProcessingSegment = false;
+            stopRecording();
+        }
     }
 
     function toggleRecording() {
@@ -573,16 +812,20 @@
                 onclick={toggleRecording}
                 class="mr-2.5 relative -top-1 cursor-pointer text-lg disabled:cursor-not-allowed disabled:text-gray-500"
                 title={isRecording
-                    ? "Arrêter l'enregistrement"
+                    ? isProcessingSegment
+                        ? "Traitement en cours... (cliquez pour arrêter)"
+                        : "Écoute continue - Parlez librement (cliquez pour arrêter)"
                     : "Enregistrer un message vocal"}
                 disabled={!chatState.isConnected}
             >
                 <span
                     class="text-4xl {isRecording
-                        ? 'text-red-500'
+                        ? isProcessingSegment
+                            ? 'text-orange-500'
+                            : 'text-red-500 animate-pulse'
                         : 'text-white'}"
                 >
-                    {isRecording ? "🔴" : "🎤"}
+                    {isRecording ? (isProcessingSegment ? "🟠" : "🔴") : "🎤"}
                 </span>
             </button>
             <input
