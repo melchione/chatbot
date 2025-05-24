@@ -21,6 +21,12 @@ services:
       PUBLIC_FAST_API_WS_URL: ${PUBLIC_FAST_API_WS_URL:-ws://fast-api:8000}
       JWT_SECRET: ${JWT_SECRET}
       FRONTEND_URL: ${FRONTEND_URL}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAMESPACE: ${DB_NAMESPACE:-main}
+      DB_NAME: ${DB_NAME:-db}
     networks:
       - chatbot_default
   fast-api:
@@ -51,10 +57,42 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAMESPACE: ${DB_NAMESPACE:-main}
+      DB_NAME: ${DB_NAME:-db}
     networks:
       - chatbot_default
+
+
+  surrealdb:
+      image: surrealdb/surrealdb:latest
+      container_name: chatbot-surrealdb-1
+      command: start --user=admin --pass=password --bind=0.0.0.0:8000 rocksdb:/data/surreal.db
+      ports:
+        - "8002:8000"
+      networks:
+        - chatbot_default
+      environment:
+        SURREAL_USER: admin
+        SURREAL_PASS: password
+        RUST_BACKTRACE: full
+      volumes:
+        - surrealdb_data:/data
+      user: root
 
 
 networks:
   chatbot_default:
     driver: bridge
+
+
+volumes:
+  surrealdb_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${PWD}/data/surrealdb
+      o: bind

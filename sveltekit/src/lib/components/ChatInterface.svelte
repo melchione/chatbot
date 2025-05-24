@@ -117,8 +117,8 @@
     let silenceTimeout = null;
     let recordingStartTime = 0;
     const MAX_RECORDING_TIME = 300000; // 5 minutes
-    const SILENCE_THRESHOLD = 0.02; // Seuil de silence légèrement plus élevé
-    const SILENCE_DURATION = 1500; // 1.5 secondes de silence
+    const SILENCE_THRESHOLD = 0.01; // Seuil de silence abaissé pour être plus sensible
+    const SILENCE_DURATION = 2000; // 2 secondes de silence
     const MIN_SEGMENT_INTERVAL = 2000; // Minimum 2 secondes entre segments
     /** @type {Blob[]} */
     let audioChunks = [];
@@ -133,6 +133,147 @@
     /** @type {string | null} */
     let currentlyPlayingMessageId = $state(null);
     let isLoadingTTS = $state(false);
+
+    // Surveiller les changements d'état de l'agent pour gérer l'enregistrement
+    $effect(() => {
+        console.log("[Audio Management] État changé:", {
+            isThinking: chatState.isThinking,
+            isRecording: isRecording,
+            isPausedForAgent: isPausedForAgent,
+            isAutoTTSPlaying: chatState.isAutoTTSPlaying,
+        });
+
+        // Si l'agent commence à penser/répondre et qu'on enregistre, arrêter temporairement
+        if (
+            (chatState.isThinking || chatState.isAutoTTSPlaying) &&
+            isRecording &&
+            !isPausedForAgent
+        ) {
+            console.log(
+                "[Audio Management] Agent répond, pause de l'enregistrement",
+            );
+            pauseRecordingForAgent();
+        }
+        // Si l'agent arrête de penser ET le TTS automatique est terminé, et qu'on était en pause, redémarrer
+        else if (
+            !chatState.isThinking &&
+            !chatState.isAutoTTSPlaying &&
+            isRecording &&
+            isPausedForAgent
+        ) {
+            console.log(
+                "[Audio Management] Agent a fini (thinking + TTS), reprise de l'enregistrement",
+            );
+            resumeRecordingAfterAgent();
+        }
+    });
+
+    let isPausedForAgent = $state(false);
+    /** @type {MediaRecorder | null} */
+    let pausedMediaRecorder = null;
+
+    function pauseRecordingForAgent() {
+        if (!isRecording || isPausedForAgent) return;
+
+        console.log("[Audio Management] DÉBUT pauseRecordingForAgent");
+        isPausedForAgent = true;
+
+        // Sauvegarder l'état actuel
+        pausedMediaRecorder = mediaRecorder;
+
+        // Arrêter temporairement l'enregistrement mais garder les resources
+        if (mediaRecorder && mediaRecorder.state === "recording") {
+            console.log("[Audio Management] Arrêt du MediaRecorder pour pause");
+            mediaRecorder.stop();
+        }
+
+        // Traiter les chunks actuels s'il y en a assez
+        if (speechDetectedDuration >= 800) {
+            console.log("[Audio Management] Traitement des chunks avant pause");
+        }
+
+        console.log(
+            "[Audio Management] Enregistrement mis en pause pour l'agent",
+        );
+    }
+
+    function resumeRecordingAfterAgent() {
+        if (!isPausedForAgent) {
+            console.log(
+                "[Audio Management] ERREUR: tentative de reprise mais pas en pause",
+            );
+            return;
+        }
+
+        console.log("[Audio Management] DÉBUT resumeRecordingAfterAgent");
+        isPausedForAgent = false;
+
+        // Réinitialiser les variables de détection
+        speechDetectedDuration = 0;
+        lastSpeechDetection = 0;
+        audioChunks = [];
+        isProcessingSegment = false;
+
+        console.log("[Audio Management] Variables réinitialisées:", {
+            speechDetectedDuration,
+            lastSpeechDetection,
+            audioChunksLength: audioChunks.length,
+            isProcessingSegment,
+        });
+
+        // Redémarrer l'enregistrement si les resources sont encore disponibles
+        if (audioStream && isRecording) {
+            try {
+                console.log(
+                    "[Audio Management] Création nouveau MediaRecorder pour reprise",
+                );
+                mediaRecorder = new MediaRecorder(audioStream, {
+                    mimeType: "audio/webm;codecs=opus",
+                });
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = () => {
+                    if (!isPausedForAgent) {
+                        console.log(
+                            "[Audio Management] MediaRecorder onstop - traitement segment",
+                        );
+                        processSegmentAudio();
+                    } else {
+                        console.log(
+                            "[Audio Management] MediaRecorder onstop - en pause, pas de traitement",
+                        );
+                    }
+                };
+
+                mediaRecorder.start(100);
+                console.log(
+                    "[Audio Management] ✅ Enregistrement repris après réponse agent",
+                );
+
+                // Redémarrer la détection de silence
+                detectSilence();
+            } catch (error) {
+                console.error(
+                    "[Audio Management] Erreur reprise enregistrement:",
+                    error,
+                );
+                stopRecording();
+            }
+        } else {
+            console.error(
+                "[Audio Management] Impossible de reprendre - audioStream ou isRecording manquant:",
+                {
+                    hasAudioStream: !!audioStream,
+                    isRecording: isRecording,
+                },
+            );
+        }
+    }
 
     // imagePreviewUrl est maintenant une valeur dérivée.
     // Elle retourne l'URL de l'objet ou null.
@@ -306,8 +447,11 @@
             const bufferLength = analyser.frequencyBinCount;
             dataArray = new Float32Array(bufferLength);
 
-            // Réinitialiser les chunks audio
+            // Réinitialiser les chunks audio et les variables de détection
             audioChunks = [];
+            speechDetectedDuration = 0;
+            lastSpeechDetection = 0;
+            isProcessingSegment = false;
 
             // Configurer les événements du MediaRecorder
             mediaRecorder.ondataavailable = (event) => {
@@ -325,7 +469,7 @@
             isRecording = true;
             recordingStartTime = Date.now();
 
-            // Timeout maximum de 30 secondes
+            // Timeout maximum de 5 minutes
             recordingTimeout = setTimeout(() => {
                 stopRecording();
             }, MAX_RECORDING_TIME);
@@ -333,7 +477,14 @@
             // Démarrer la détection de silence
             detectSilence();
 
-            console.log("[startRecording] Enregistrement démarré");
+            console.log(
+                "[startRecording] Enregistrement démarré avec variables initialisées :",
+                {
+                    speechDetectedDuration,
+                    lastSpeechDetection,
+                    isProcessingSegment,
+                },
+            );
         } catch (error) {
             console.error("Erreur d'accès au microphone:", error);
             chatState.addMessage(
@@ -344,7 +495,7 @@
     }
 
     function detectSilence() {
-        if (!analyser || !dataArray || !isRecording) return;
+        if (!analyser || !dataArray || !isRecording || isPausedForAgent) return;
 
         analyser.getFloatTimeDomainData(dataArray);
 
@@ -357,12 +508,19 @@
 
         const currentTime = Date.now();
 
+        // Debug périodique des niveaux sonores (toutes les 2 secondes)
+        if (currentTime % 2000 < 50) {
+            console.log(
+                `[detectSilence] RMS: ${rms.toFixed(4)}, Seuil: ${SILENCE_THRESHOLD}, Parole détectée: ${speechDetectedDuration}ms`,
+            );
+        }
+
         if (rms < SILENCE_THRESHOLD) {
             // Silence détecté
             if (!silenceTimeout && !isProcessingSegment) {
                 silenceTimeout = setTimeout(() => {
-                    // Vérifier qu'on a eu au moins 500ms de parole avant de traiter
-                    if (speechDetectedDuration >= 500) {
+                    // Vérifier qu'on a eu au moins 800ms de parole avant de traiter
+                    if (speechDetectedDuration >= 800) {
                         console.log(
                             `[detectSilence] Pause détectée avec ${speechDetectedDuration}ms de parole, traitement du segment`,
                         );
@@ -373,13 +531,20 @@
                         );
                         // Réinitialiser pour le prochain segment
                         speechDetectedDuration = 0;
+                        lastSpeechDetection = 0;
                     }
                 }, SILENCE_DURATION);
             }
         } else {
-            // Parole détectée
-            if (lastSpeechDetection > 0) {
-                speechDetectedDuration += currentTime - lastSpeechDetection;
+            // Parole détectée - Compter directement le temps estimé entre frames (~16-33ms à 60 FPS)
+            const estimatedFrameTime = 20; // Estimation conservative de 20ms par frame
+            speechDetectedDuration += estimatedFrameTime;
+
+            if (lastSpeechDetection === 0) {
+                // Premier detection de parole, commencer le comptage
+                console.log(
+                    `[detectSilence] Première détection de parole, RMS: ${rms.toFixed(4)}`,
+                );
             }
             lastSpeechDetection = currentTime;
 
@@ -400,6 +565,7 @@
         if (!isRecording) return;
 
         isRecording = false;
+        isPausedForAgent = false; // Réinitialiser l'état de pause
 
         // Nettoyer les timeouts
         if (recordingTimeout) {
@@ -506,10 +672,10 @@
     async function processCurrentSegment() {
         if (isProcessingSegment) return; // Éviter les traitements multiples
 
-        // Ne pas traiter de nouveaux segments si l'agent est en train de répondre
-        if (chatState.isThinking) {
+        // Ne pas traiter de nouveaux segments si l'agent est en train de répondre ou si on est en pause
+        if (chatState.isThinking || isPausedForAgent) {
             console.log(
-                "[processCurrentSegment] Agent en cours de réponse, segment ignoré",
+                "[processCurrentSegment] Agent en cours de réponse ou en pause, segment ignoré",
             );
             // Nettoyer le timeout et ne pas traiter
             if (silenceTimeout) {
@@ -618,11 +784,20 @@
             isRecording,
             "isProcessingSegment:",
             isProcessingSegment,
+            "isPausedForAgent:",
+            isPausedForAgent,
         );
 
         if (!isRecording) {
             console.log("[restartRecording] ARRÊT - isRecording est false");
             return; // Si l'utilisateur a fermé le micro, ne pas redémarrer
+        }
+
+        if (isPausedForAgent) {
+            console.log(
+                "[restartRecording] ARRÊT - En pause pour l'agent, ne pas redémarrer",
+            );
+            return; // Si on est en pause pour l'agent, ne pas redémarrer
         }
 
         console.log("[restartRecording] Redémarrage de l'enregistrement...");
@@ -1083,20 +1258,30 @@
                 onclick={toggleRecording}
                 class="mr-2.5 relative -top-1 cursor-pointer text-lg disabled:cursor-not-allowed disabled:text-gray-500"
                 title={isRecording
-                    ? isProcessingSegment
-                        ? "Traitement en cours... (cliquez pour arrêter)"
-                        : "Écoute continue - Parlez librement (cliquez pour arrêter)"
+                    ? isPausedForAgent
+                        ? "En pause (agent répond) - cliquez pour arrêter"
+                        : isProcessingSegment
+                          ? "Traitement en cours... (cliquez pour arrêter)"
+                          : "Écoute continue - Parlez librement (cliquez pour arrêter)"
                     : "Enregistrer un message vocal"}
                 disabled={!chatState.isConnected}
             >
                 <span
                     class="text-4xl {isRecording
-                        ? isProcessingSegment
-                            ? 'text-orange-500'
-                            : 'text-red-500 animate-pulse'
+                        ? isPausedForAgent
+                            ? 'text-yellow-500'
+                            : isProcessingSegment
+                              ? 'text-orange-500'
+                              : 'text-red-500 animate-pulse'
                         : 'text-white'}"
                 >
-                    {isRecording ? (isProcessingSegment ? "🟠" : "🔴") : "🎤"}
+                    {isRecording
+                        ? isPausedForAgent
+                            ? "⏸️"
+                            : isProcessingSegment
+                              ? "🟠"
+                              : "🔴"
+                        : "🎤"}
                 </span>
             </button>
             <input

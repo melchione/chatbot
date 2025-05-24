@@ -114,3 +114,97 @@ Agency Flow est une plateforme qui permet à ses utilisateurs de rédiger des te
 
 
     """
+
+
+def get_tts_instruction():
+    return """
+        <tts_optimization_rules>
+            <objective>
+                Générer une version de texte optimisée pour la synthèse vocale (TTS) qui sera naturelle, fluide et agréable à écouter.
+            </objective>
+            <core_principles>
+                Le texte doit sonner naturel quand lu à voix haute
+                Privilégier la clarté et la fluidité à la concision
+                Éviter toute ambiguïté de prononciation
+                Imaginer un présentateur radio lisant le contenu
+            </core_principles>
+            <formatting_rules>
+                <sentence_structure>
+                    Limiter les phrases à 15-20 mots maximum
+                    Utiliser des points plutôt que des virgules pour créer des pauses naturelles
+                    Privilégier la voix active sur la voix passive
+                    Utiliser des connecteurs logiques : "ensuite", "par ailleurs", "en effet"
+                </sentence_structure>
+                <numbers_and_symbols>
+                    Écrire TOUS les nombres en toutes lettres : "vingt-trois" au lieu de "23"
+                    Convertir les symboles : "pour cent" au lieu de "%", "euros" au lieu de "€"
+                    Dates en format long : "le quinze janvier deux mille vingt-cinq" au lieu de "15/01/2025"
+                    Heures : "quinze heures trente" au lieu de "15h30"
+                </numbers_and_symbols>
+                <acronyms_handling>
+                    Acronymes courts (2-3 lettres) : épeler avec des points "I. A."
+                    Acronymes connus : écrire phonétiquement "la NASA"
+                    Sigles techniques : développer ou phonétiser selon le contexte
+                </acronyms_handling>
+                <lists_transformation>
+                    Remplacer les puces par : "Premièrement... Deuxièmement... Troisièmement..."
+                    Alternative : "Premier point... Deuxième point... Troisième point..."
+                    Toujours annoncer le nombre total d'éléments : "Voici les trois points clés"
+                </lists_transformation>
+                <special_content>
+                    Citations : "Je cite : [contenu]. Fin de citation."
+                    Emphase : "j'insiste sur" ou "point important" au lieu du formatage visuel
+                    Titres : ajouter un point final pour marquer la pause
+                    Parenthèses : intégrer le contenu dans la phrase principale
+                </special_content>
+                <technical_content>
+                    URLs : "l'adresse web exemple point com"
+                    Emails : "contact arobase entreprise point fr"
+                    Code : "Voici un exemple de code" puis description simple
+                    Variables : "la variable user underscore name"
+                    Formules : "x au carré plus deux x"
+                </technical_content>
+            </formatting_rules>
+            <transformation_examples>
+                <example_1>
+                    <markdown>## Résultats Q4 2024</markdown>
+                    <tts>Résultats du quatrième trimestre deux mille vingt-quatre.</tts>
+                </example_1>
+                <example_2>
+                    <markdown>Performance : +25% (vs Q3)</markdown>
+                    <tts>Performance. Une augmentation de vingt-cinq pour cent par rapport au trimestre précédent.</tts>
+                </example_2>
+                <example_3>
+                    <markdown>
+                        Les points clés :
+
+                        Réduction des coûts
+                        Amélioration UX
+                        Nouvelle API
+                    </markdown>
+                    <tts>
+                        Voici les trois points clés.
+                        Premièrement, la réduction des coûts.
+                        Deuxièmement, l'amélioration de l'expérience utilisateur.
+                        Troisièmement, la nouvelle API.
+                    </tts>
+                </example_3>
+                <example_4>
+                    <markdown>Voir documentation pour plus d'infos.</markdown>
+                    <tts>Pour plus d'informations, consultez la documentation disponible à l'adresse web docs point com.</tts>
+                </example_4>
+            </transformation_examples>
+            <quality_checklist>
+                Tous les nombres sont écrits en lettres
+                Les symboles sont explicités
+                Les phrases sont courtes et claires
+                Les listes sont transformées en énumérations
+                Les URLs et emails sont phonétisés
+                Le texte sonne naturel à l'oral
+                Pas d'ambiguïté de prononciation
+            </quality_checklist>
+            <output_format>
+                Lorsque tu génères une version TTS, applique systématiquement toutes les règles définies dans <formatting_rules> et vérifie avec <quality_checklist>.
+            </output_format>
+        </tts_optimization_rules>
+        """
